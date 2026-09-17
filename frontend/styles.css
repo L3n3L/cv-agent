@@ -277,3 +277,5 @@ body { letter-spacing:-.005em; }
 .assistant-drawer .turn-progress i { display:block; width:5px; height:5px; flex:0 0 5px; border-radius:50%; background:#aeb7c2; }
 .assistant-drawer .turn-progress.is-running i { animation:agent-tool-pulse 1s ease-in-out infinite; }
 @keyframes agent-tool-pulse { 0%,100% { opacity:.35; transform:scale(.8); } 50% { opacity:1; transform:scale(1); } }
+
+.preview-empty { display:grid; min-height:100%; place-items:center; padding:32px; color:#9aa3ad; background:#fbfcfd; font-size:13px; letter-spacing:.01em; text-align:center; }

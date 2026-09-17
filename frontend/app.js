@@ -15,6 +15,26 @@ const routeCopy = {
 }
 let currentRoute = 'workbench'
 let currentSession = 'campus'
+let activeSessionId = ''
+
+function previewUrl() {
+  return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
+}
+
+function syncPreviewFrames() {
+  const src = previewUrl()
+  $$('.direct-preview-stage iframe, .full-real-frame, .template-real-thumb').forEach((frame) => {
+    if (src) {
+      frame.src = src
+      return
+    }
+    const empty = document.createElement('div')
+    empty.className = 'preview-empty'
+    empty.setAttribute('role', 'status')
+    empty.textContent = '选择工作区后显示真实预览'
+    frame.replaceWith(empty)
+  })
+}
 let workbenchMode = 'chat'
 let previewOpen = false
 const layoutStorageKey = 'cvagent-layout-v2'
@@ -219,7 +239,8 @@ function renderEditor() {
 }
 
 function renderWorkbench() {
-  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span>草稿 · 2 页 / 目标 1 页</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="./real-template?template=campus-standard" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> 实时渲染</span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
+  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span>草稿 · 2 页 / 目标 1 页</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> 实时渲染</span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
+  syncPreviewFrames()
   applyLayoutPrefs()
   $('#assistantContent').innerHTML = renderChatRefined()
   $('#editorApply').addEventListener('click', () => { $('#editorState').textContent = '已应用 · 待渲染'; updateSessionStatus('草稿已更新 · 待渲染'); showToast('内容已写入当前会话草稿') })
@@ -228,15 +249,17 @@ function renderWorkbench() {
 }
 
 function renderPreview() {
-  $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="./real-template?template=campus-standard"></iframe></div></div><div class="preview-foot"><span><i></i> 当前 render · 待测量</span><button class="primary-small" type="button">重新渲染</button></div></div>`
+  $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> 当前 render · 待测量</span><button class="primary-small" type="button">重新渲染</button></div></div>`
+  syncPreviewFrames()
 }
 
 function templateCard(id, name, revision, type, selected, tags) {
-  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}真实模板缩略图"><iframe class="template-real-thumb" title="${name}真实模板缩略图" src="./real-template?template=${encodeURIComponent(id)}" loading="lazy"></iframe></div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><small>${revision}</small><div class="tag-row">${tags.map((tag) => `<i>${tag}</i>`).join('')}</div><button class="secondary-button template-select" data-template="${id}" type="button">${selected ? '当前使用' : '选择模板'}</button></div></article>`
+  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}真实模板缩略图"><iframe class="template-real-thumb" title="${name}真实模板缩略图" src="about:blank" loading="lazy"></iframe></div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><small>${revision}</small><div class="tag-row">${tags.map((tag) => `<i>${tag}</i>`).join('')}</div><button class="secondary-button template-select" data-template="${id}" type="button">${selected ? '当前使用' : '选择模板'}</button></div></article>`
 }
 
 function renderTemplates() {
   $('#routeView').innerHTML = `<div class="templates-page"><div class="template-grid">${templateCard('campus-standard', '校招标准', '内置模板 · campus-standard', 'standard', true, ['单栏', '校招', '标准'])}${templateCard('business-ledger-plus', '商务履历增强', '内置模板 · business-ledger-plus', 'business', false, ['商务', '时间线', '社招'])}${templateCard('magazine-feature', '杂志开篇', '内置模板 · magazine-feature', 'editorial', false, ['运营', '杂志', '叙事'])}${templateCard('geek-lab', '极客实验室', '内置模板 · geek-lab', 'terminal', false, ['Geek', '暗黑', '模块化'])}${templateCard('case-study', '重点案例', '内置模板 · case-study', 'case', false, ['作品集', '重点内容', '产品'])}${templateCard('portrait-profile', '肖像侧栏', '内置模板 · portrait-profile', 'portrait', false, ['设计', '头像', '个人品牌'])}</div></div>`
+  syncPreviewFrames()
   $$('.template-select').forEach((button) => button.addEventListener('click', () => { $$('.template-card').forEach((card) => { card.classList.toggle('selected', card === button.closest('.template-card')); card.querySelector('.template-name span').textContent = card === button.closest('.template-card') ? '当前使用' : '可选择' }); $$('.template-select').forEach((item) => { item.textContent = item === button ? '当前使用' : '选择模板' }); updateSessionStatus('模板已更新 · 待重新渲染'); showToast(`已选择「${button.closest('.template-card').querySelector('.template-name b').textContent}」`) }))
 }
 

@@ -757,7 +757,7 @@ async function applyPresentationTuning() {
 }
 
 function renderWorkbench() {
-  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b data-template-name>${escapeHtml(liveState.templateName || liveState.templateId)}</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span><button class="ghost-button" type="button" data-toggle-tuning>手动微调</button></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div><div class="presentation-panel" id="presentationPanel" hidden><div class="presentation-panel-head"><b>手动微调</b><button class="ghost-button" type="button" data-close-tuning>关闭</button></div><p>只修改当前会话的隔离版式，不覆盖源文件。</p><div class="tuning-grid"><label>字号<input id="tuningFontSize" type="number" min="11" max="18" step="0.5" value="13"></label><label>行高<input id="tuningLineHeight" type="number" min="1.2" max="2" step="0.05" value="1.5"></label><label>段落间距<input id="tuningSectionGap" type="number" min="6" max="30" step="1" value="16"></label><label>页边距<input id="tuningPageMargin" type="number" min="24" max="72" step="1" value="38"></label></div><button class="primary-small" id="applyTuning" type="button">应用并重新渲染</button></div></section></div></div>`
+  $('#routeContent').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b data-template-name>${escapeHtml(liveState.templateName || liveState.templateId)}</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span><button class="ghost-button" type="button" data-toggle-tuning>手动微调</button></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div><div class="presentation-panel" id="presentationPanel" hidden><div class="presentation-panel-head"><b>手动微调</b><button class="ghost-button" type="button" data-close-tuning>关闭</button></div><p>只修改当前会话的隔离版式，不覆盖源文件。</p><div class="tuning-grid"><label>字号<input id="tuningFontSize" type="number" min="11" max="18" step="0.5" value="13"></label><label>行高<input id="tuningLineHeight" type="number" min="1.2" max="2" step="0.05" value="1.5"></label><label>段落间距<input id="tuningSectionGap" type="number" min="6" max="30" step="1" value="16"></label><label>页边距<input id="tuningPageMargin" type="number" min="24" max="72" step="1" value="38"></label></div><button class="primary-small" id="applyTuning" type="button">应用并重新渲染</button></div></section></div></div>`
   syncPreviewFrames()
   applyLayoutPrefs()
   bindPreviewFit()
@@ -775,7 +775,7 @@ function renderWorkbench() {
 }
 
 function renderPreview() {
-  $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> <span data-full-preview-status>等待渲染</span></span><button class="primary-small" type="button">重新渲染</button></div></div>`
+  $('#routeContent').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> <span data-full-preview-status>等待渲染</span></span><button class="primary-small" type="button">重新渲染</button></div></div>`
   syncPreviewFrames()
   bindPreviewFit()
 }
@@ -838,8 +838,9 @@ async function applyTemplate(template, button) {
 }
 
 async function renderTemplates() {
-  const view = $('#routeView')
-  view.scrollTop = 0
+  const view = $('#routeContent')
+  const viewport = $('#routeView')
+  viewport.scrollTop = 0
   if (!liveState.workspaceId) {
     view.innerHTML = '<div class="empty-view">请先选择工作区，模板库会展示当前简历在每个真实模板下的渲染结果。</div>'
     return
@@ -851,7 +852,7 @@ async function renderTemplates() {
     const selected = liveState.templates.find((item) => item.id === liveState.templateId)
     if (selected) liveState.templateName = selected.name || selected.id
     view.innerHTML = `<div class="templates-page"><div class="template-grid">${liveState.templates.map(templateCard).join('')}</div></div>`
-    view.scrollTop = 0
+    viewport.scrollTop = 0
     syncTemplatePreviewFrames()
     $$('.template-select').forEach((button) => button.addEventListener('click', () => {
       const template = liveState.templates.find((item) => item.id === button.dataset.template)
@@ -884,8 +885,9 @@ function renderCheckContent(task, quality) {
 }
 
 async function renderChecks() {
-  const view = $('#routeView')
-  view.scrollTop = 0
+  const view = $('#routeContent')
+  const viewport = $('#routeView')
+  viewport.scrollTop = 0
   if (!liveState.sessionId) {
     view.innerHTML = '<div class="empty-view">请先选择工作区并加载当前会话，才能进行真实检查。</div>'
     return
@@ -900,7 +902,7 @@ async function renderChecks() {
     const qualityResponse = await api.post('/api/agent/quality', { sessionId: liveState.sessionId, target: 'draft', targetPages: liveState.targetPages })
     liveState.blockerCount = (task.blockers?.length || 0) + (qualityResponse.body.result?.checks || []).filter((item) => item.status === 'error').length
     view.innerHTML = renderCheckContent(task, qualityResponse.body.result)
-    view.scrollTop = 0
+    viewport.scrollTop = 0
     $$('[data-check-route]').forEach((button) => button.addEventListener('click', () => renderRoute(button.dataset.checkRoute)))
     updateHeader()
   } catch (error) {
@@ -950,8 +952,9 @@ async function archiveVersion(version) {
 }
 
 async function renderVersions() {
-  const view = $('#routeView')
-  view.scrollTop = 0
+  const view = $('#routeContent')
+  const viewport = $('#routeView')
+  viewport.scrollTop = 0
   if (!liveState.workspaceId) {
     view.innerHTML = '<div class="empty-view">请先选择工作区，正式版本会保存在当前工作区。</div>'
     return
@@ -963,7 +966,7 @@ async function renderVersions() {
     const createDisabled = liveState.workflowState !== 'accepted'
     const records = versions.map((version, index) => `<article class="version-row"><div class="version-mark saved">${String(index + 1).padStart(2, '0')}</div><div class="version-copy"><b>${escapeHtml(version.name || '未命名版本')}</b><span>${escapeHtml(version.templateId || '未记录模板')} · ${escapeHtml(version.templateRevision || '未记录修订')}</span><small>保存于 ${escapeHtml(versionDate(version.savedAt))} · ${version.archived ? '已归档' : '正式版本'}</small></div><em class="${version.archived ? '' : 'saved-label'}">${version.archived ? '已归档' : '已保存'}</em><div class="version-actions"><button class="secondary-button" type="button" data-version-open="${escapeHtml(version.id)}">打开</button><button class="secondary-button" type="button" data-version-rename="${escapeHtml(version.id)}" ${version.archived ? 'disabled' : ''}>改名</button><button class="secondary-button" type="button" data-version-archive="${escapeHtml(version.id)}" ${version.archived ? 'disabled' : ''}>归档</button></div></article>`).join('')
     view.innerHTML = `<div class="versions-page"><div class="page-toolbar"><button class="primary-small" id="createVersionButton" type="button" ${createDisabled ? 'disabled' : ''} title="${createDisabled ? '真实 A4 验收通过后才能保存正式版本' : '保存当前正式版本'}">创建正式版本</button></div><div class="version-list"><article class="version-row current"><div class="version-mark">D</div><div class="version-copy"><b>当前隔离草稿</b><span>${escapeHtml(liveState.templateName || liveState.templateId)} · ${escapeHtml(liveState.workflowState || '未知状态')}</span><small>${liveState.renderId ? '已生成 render，' : '尚未生成 render，'}${liveState.measurement ? '已有真实测量' : '等待真实 A4 测量'}</small></div><em>未固化</em><button class="secondary-button" type="button" data-version-route="workbench">继续调整</button></article>${records || '<div class="empty-view">当前工作区还没有正式投递版本。真实验收通过后可创建。</div>'}</div></div>`
-    view.scrollTop = 0
+    viewport.scrollTop = 0
     const createButton = $('#createVersionButton')
     if (createButton) createButton.addEventListener('click', () => { void saveCurrentVersion() })
     $('[data-version-route]')?.addEventListener('click', () => renderRoute('workbench'))

@@ -21,7 +21,7 @@
 @media (max-width:700px) { html,body { height:auto; overflow:auto; }.app-shell,.app-shell.preview-open { display:block; height:auto; min-height:100vh; overflow:visible; }.sidebar { height:auto; min-height:auto; }.primary-nav,.session-section,.sidebar-foot { display:none; }.route-header { min-height:90px; padding:17px 18px; }.route-title-line h1 { font-size:20px; }.workbench-view,.preview-page,.templates-page,.checks-page,.versions-page { padding:20px 18px 24px; }.chat-layout,.editor-layout { height:auto; min-height:540px; }.chat-stream { min-height:400px; padding:20px 0 12px; }.composer { width:100%; margin-bottom:0; }.composer-foot > span:first-child { display:none; }.flow-state { display:none; }.full-preview-canvas { min-height:520px; padding:22px 10px; }.full-paper { transform:scale(.82); transform-origin:top center; margin-bottom:-80px; }.full-real-frame-wrap { width:360px; height:510px; }.full-real-frame { transform:scale(.453); }.check-overview { grid-template-columns:1fr; }.blocker-item { align-items:flex-start; flex-wrap:wrap; }.blocker-item button { margin-left:38px; }.version-row { flex-wrap:wrap; }.version-row button { margin-left:44px; }.template-grid { grid-template-columns:1fr; }.preview-drawer { width:min(360px,92vw); } }
 
 /* Workbench: the product itself is the editor + A4 result. Agent is auxiliary. */
-.workbench-split { display:grid; min-height:0; height:calc(100dvh - 286px); grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr); gap:12px; margin-top:22px; }
+.workbench-split { display:grid; min-width:0; width:100%; min-height:0; height:calc(100dvh - 286px); grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr); gap:12px; margin-top:22px; }
 .editor-pane,.direct-preview-pane { min-width:0; min-height:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#fff; }
 .editor-pane .editor-layout { height:100%; min-height:0; padding:16px; }
 .direct-preview-pane { display:flex; min-height:0; flex-direction:column; background:#f8fafc; }
@@ -33,7 +33,7 @@
 .assistant-drawer { min-width:0; min-height:0; height:100%; overflow:hidden; padding:18px 15px 12px; border-left:1px solid var(--line); background:#f8fafc; }.assistant-open { grid-template-columns:248px minmax(0,1fr) 350px; }.assistant-context { display:grid; grid-template-columns:auto 1fr; gap:4px 8px; margin:0 0 10px; padding:9px 10px; border:1px solid #dce4ef; border-radius:6px; background:#fff; color:var(--body); font-size:10px; }.assistant-context span { color:var(--ink); font-weight:700; }.assistant-context small { grid-column:1 / -1; color:var(--muted); font-size:9px; }.assistant-drawer #assistantContent { min-height:0; height:calc(100% - 83px); }.assistant-drawer .chat-layout { height:100%; min-height:0; }.assistant-drawer .chat-stream { width:100%; align-self:stretch; padding:8px 2px 10px; }.assistant-drawer .composer { width:100%; margin:0; }.assistant-drawer .composer-foot > span:first-child { display:none; }.assistant-drawer .message { gap:8px; margin:13px 0; }.assistant-drawer .message-bubble { font-size:11px; }.assistant-drawer .run-card { margin-left:38px; }
 @media (max-width:1100px) { .assistant-open { grid-template-columns:240px minmax(0,1fr); }.assistant-drawer { position:fixed; top:0; right:0; bottom:0; z-index:30; width:min(350px,calc(100vw - 240px)); height:100dvh; box-shadow:-12px 0 30px #2034541a; transform:translateX(100%); transition:transform .2s ease; }.assistant-open .assistant-drawer { transform:translateX(0); }.workbench-split { grid-template-columns:minmax(280px,.9fr) minmax(310px,1.1fr); }.direct-preview-frame-wrap { transform:scale(.78); transform-origin:top center; margin-bottom:-135px; } }
 @media (max-width:700px) { .app-shell.assistant-open { display:block; }.workbench-split { height:auto; grid-template-columns:1fr; }.editor-pane { min-height:500px; }.direct-preview-pane { min-height:680px; }.assistant-drawer { width:min(350px,92vw); }.direct-preview-frame-wrap { transform:scale(.72); margin-bottom:-180px; } }
-@media (min-width:1101px) and (max-width:1350px) { .assistant-open .workbench-split { grid-template-columns:minmax(260px,.9fr) 8px minmax(280px,1.1fr); }.assistant-open .direct-preview-frame-wrap { width:300px; height:424px; }.assistant-open .direct-preview-frame-wrap iframe { transform:scale(.378); } }
+@media (min-width:1101px) and (max-width:1350px) { .assistant-open .workbench-split { width:100%; min-width:0; grid-template-columns:minmax(0,.9fr) 8px minmax(0,1.1fr); } }
 
 /* Visual polish: refined, restrained, and result-first. */
 :root { --ink:#17202a; --body:#667281; --muted:#98a2ae; --line:#dde2e8; --canvas:#f6f7f9; --surface:#fff; --blue:#2f6fed; --blue-soft:#eef4ff; --red:#c74634; --red-soft:#fff3f0; --green:#657384; }
@@ -124,7 +124,7 @@ body { letter-spacing:-.005em; }
 .resize-handle:hover::before,.resize-handle:focus-visible::before,body.is-resizing .resize-handle::before { opacity:1; }
 .resize-handle:focus-visible { outline:0; background:#f6f8fa; }
 .resize-editor { grid-column:auto; }
-.workbench-split { grid-template-columns:minmax(280px,var(--editor-width,1fr)) 8px minmax(320px,1fr); }
+.workbench-split { min-width:0; grid-template-columns:minmax(0,var(--editor-width,1fr)) 8px minmax(0,1fr); }
 .sidebar-toggle { position:absolute; top:18px; right:10px; display:flex; align-items:center; gap:3px; padding:2px 3px; color:var(--muted); background:transparent; font-size:14px; line-height:1; }
 .sidebar-toggle small { font-size:9px; }
 .sidebar-toggle:hover { color:var(--blue); }
@@ -215,8 +215,8 @@ body { letter-spacing:-.005em; }
 
 /* A narrow Agent view must consume layout space instead of covering the workbench. */
 @media (max-width:1100px) {
-  .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto auto; height:100dvh; overflow:auto; align-content:start; }
-  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:100%; min-height:0; }
+  .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto auto; height:auto; min-height:100vh; overflow:visible; align-content:start; }
+  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:auto; min-height:100vh; }
   .app-shell.assistant-open .resize-assistant { display:none; }
   .app-shell.assistant-open .assistant-drawer { position:static; grid-column:1 / -1; grid-row:2; width:auto; height:min(680px,70dvh); min-height:420px; transform:none; border-top:1px solid var(--line); border-left:0; box-shadow:none; }
 }
@@ -310,3 +310,95 @@ body { letter-spacing:-.005em; }
 .assistant-drawer .composer-foot button { margin-left:10px; padding:0; color:#363d44; background:transparent; font-size:10px; font-weight:600; }
 .assistant-drawer .composer-foot button:hover { color:#101418; background:transparent; }
 @keyframes agent-tool-pulse { 0%,100% { opacity:.35; transform:scale(.8); } 50% { opacity:1; transform:scale(1); } }
+
+/* Same-level workbench: Markdown, A4, and Agent are direct items of one grid. */
+.route-content { min-width:0; min-height:100%; }
+.app-shell.assistant-open,
+.app-shell.sidebar-collapsed.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr) 0 0; }
+.app-shell.sidebar-collapsed.assistant-open { grid-template-columns:0 0 minmax(0,1fr) 0 0; }
+.app-shell.assistant-open .route-view { display:grid; min-width:0; min-height:0; grid-template-columns:minmax(0,var(--editor-width,1fr)) 8px minmax(0,1fr) 8px var(--assistant-width); grid-template-rows:minmax(0,1fr); gap:0; overflow:hidden; padding:14px 32px 20px; }
+.app-shell.assistant-open #routeContent,
+.app-shell.assistant-open .workbench-view,
+.app-shell.assistant-open .workbench-split { display:contents; }
+.app-shell.assistant-open .editor-pane { grid-column:1; grid-row:1; min-width:0; min-height:0; }
+.app-shell.assistant-open .resize-editor { grid-column:2; grid-row:1; display:block; }
+.app-shell.assistant-open .direct-preview-pane { grid-column:3; grid-row:1; min-width:0; min-height:0; }
+.app-shell.assistant-open .resize-assistant { grid-column:4; grid-row:1; display:block; }
+.app-shell.assistant-open .assistant-drawer { position:static; grid-column:5; grid-row:1; width:auto; min-width:0; min-height:0; height:auto; transform:none; border-top:0; border-left:1px solid var(--line); box-shadow:none; }
+
+@media (max-width:1100px) {
+  .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto; height:auto; min-height:100vh; overflow:visible; }
+  .app-shell.sidebar-collapsed.assistant-open { grid-template-columns:0 0 minmax(0,1fr); }
+  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:auto; min-height:100vh; }
+  .app-shell.assistant-open .route-view { grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto 8px minmax(420px,70dvh); min-height:100vh; overflow:auto; padding:14px 32px 20px; }
+  .app-shell.assistant-open .editor-pane { grid-column:1; grid-row:1; min-height:600px; }
+  .app-shell.assistant-open .resize-editor { display:none; }
+  .app-shell.assistant-open .direct-preview-pane { grid-column:1; grid-row:2; min-height:680px; border-top:1px solid var(--line); }
+  .app-shell.assistant-open .resize-assistant { grid-column:1; grid-row:3; display:none; }
+  .app-shell.assistant-open .assistant-drawer { grid-column:1; grid-row:4; width:auto; height:min(680px,70dvh); min-height:420px; border-top:1px solid var(--line); border-left:0; }
+}
+
+@media (max-width:700px) {
+  .app-shell.assistant-open { display:block; height:auto; min-height:100vh; overflow:visible; }
+  .app-shell.assistant-open .main-stage { height:auto; min-height:100vh; }
+  .app-shell.assistant-open .route-view { min-height:0; overflow:visible; padding:20px 18px 24px; }
+  .app-shell.assistant-open .editor-pane { min-height:540px; }
+  .app-shell.assistant-open .direct-preview-pane { min-height:680px; }
+  .app-shell.assistant-open .assistant-drawer { width:100%; height:min(680px,70dvh); }
+}
+
+/* The Agent stream starts at the top; its workspace context remains in the session state, not a second toolbar. */
+.assistant-drawer .drawer-header,
+.assistant-drawer .assistant-context { display:none; }
+.assistant-drawer #assistantContent { height:100%; }
+.assistant-drawer .chat-stream { padding-top:4px; }
+
+/* The Agent is a full-height peer of main-stage. The route header therefore cannot push the chat down. */
+.app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr) 8px var(--assistant-width); }
+.app-shell.sidebar-collapsed.assistant-open { grid-template-columns:0 0 minmax(0,1fr) 8px var(--assistant-width); }
+.app-shell.assistant-open .route-view { display:block; min-height:0; overflow:auto; padding:0; }
+.app-shell.assistant-open #routeContent { display:block; min-width:0; min-height:100%; }
+.app-shell.assistant-open .assistant-drawer { position:static; grid-column:5; grid-row:1; width:auto; height:100%; min-width:0; min-height:0; transform:none; border-top:0; border-left:1px solid var(--line); box-shadow:none; }
+.app-shell.assistant-open .resize-assistant { grid-column:4; grid-row:1; display:block; }
+
+@media (max-width:1100px) {
+  .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto auto; height:auto; min-height:100vh; overflow:visible; }
+  .app-shell.sidebar-collapsed.assistant-open { grid-template-columns:0 0 minmax(0,1fr); }
+  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:auto; min-height:100vh; }
+  .app-shell.assistant-open .route-view { display:block; min-height:0; overflow:auto; padding:14px 32px 20px; }
+  .app-shell.assistant-open .assistant-drawer { grid-column:1 / -1; grid-row:2; width:auto; height:min(680px,70dvh); min-height:420px; border-top:1px solid var(--line); border-left:0; }
+  .app-shell.assistant-open .resize-assistant { display:none; }
+}
+
+@media (max-width:700px) {
+  .app-shell.assistant-open { display:block; height:auto; min-height:100vh; overflow:visible; }
+  .app-shell.assistant-open .main-stage { height:auto; min-height:100vh; }
+  .app-shell.assistant-open .route-view { padding:20px 18px 24px; overflow:visible; }
+  .app-shell.assistant-open .assistant-drawer { width:100%; height:min(680px,70dvh); }
+}
+
+/* A 10-inch-plus desktop viewport still has room for three peers; reserve stacking for truly narrow windows. */
+@media (min-width:961px) and (max-width:1100px) {
+  .app-shell.assistant-open { display:grid; grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr) 8px minmax(280px,min(var(--assistant-width),32vw)); grid-template-rows:1fr; height:100dvh; min-height:0; overflow:hidden; }
+  .app-shell.sidebar-collapsed.assistant-open { grid-template-columns:0 0 minmax(0,1fr) 8px minmax(280px,min(var(--assistant-width),32vw)); }
+  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:100%; min-height:0; }
+  .app-shell.assistant-open .route-view { display:block; min-height:0; overflow:auto; padding:0; }
+  .app-shell.assistant-open #routeContent { display:block; min-height:100%; }
+  .app-shell.assistant-open .resize-assistant { grid-column:4; grid-row:1; display:block; }
+  .app-shell.assistant-open .assistant-drawer { grid-column:5; grid-row:1; width:auto; height:100%; min-height:0; border-top:0; border-left:1px solid var(--line); }
+  .app-shell.assistant-open .workbench-split { width:100%; height:calc(100dvh - 122px); grid-template-columns:minmax(0,var(--editor-width,1fr)) 8px minmax(0,1fr); }
+  .app-shell.assistant-open .resize-editor { display:block; }
+  .app-shell.assistant-open .editor-pane,
+  .app-shell.assistant-open .direct-preview-pane { min-height:0; }
+}
+
+@media (min-width:961px) {
+  .app-shell.assistant-open .workbench-split { display:grid; width:100%; min-width:0; grid-template-columns:minmax(0,var(--editor-width,1fr)) 8px minmax(0,1fr); }
+  .app-shell.assistant-open .editor-pane,
+  .app-shell.assistant-open .resize-editor,
+  .app-shell.assistant-open .direct-preview-pane { grid-column:auto; grid-row:auto; }
+}
+
+@media (min-width:961px) and (max-width:1100px) {
+  .app-shell.assistant-open .workbench-split { grid-template-columns:minmax(0,1fr) 8px minmax(0,1fr); }
+}

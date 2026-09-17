@@ -5,18 +5,30 @@ import path from 'node:path'
 
 const frontendRoot = path.resolve(import.meta.dirname, '..', '..', 'frontend')
 
-test('frontend keeps the editor, resize handle, and preview in three tracks with Agent open', async () => {
+test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height peer', async () => {
+  const html = await fs.readFile(path.join(frontendRoot, 'index.html'), 'utf8')
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
-  assert.match(css, /\.assistant-open \.workbench-split \{ grid-template-columns:minmax\(260px,\.9fr\) 8px minmax\(280px,1\.1fr\); \}\s*\.assistant-open \.direct-preview-frame-wrap/)
-  assert.match(css, /\.app-shell\.sidebar-collapsed\.assistant-open \{ grid-template-columns:0 0 minmax\(0,1fr\) 8px var\(--assistant-width\); \}/)
+  assert.match(html, /<section class="route-view" id="routeView"[\s\S]*?<div class="route-content" id="routeContent"><\/div><\/section>[\s\S]*?<\/main>[\s\S]*?class="resize-handle resize-assistant"[\s\S]*?id="assistantDrawer"/)
+  assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\) 8px var\(--assistant-width\); \}/)
+  assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:5; grid-row:1; width:auto; height:100%;/)
+  assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ grid-column:4; grid-row:1; display:block; \}/)
+  assert.match(css, /\.assistant-drawer \.drawer-header,[\s\S]*?\.assistant-drawer \.assistant-context \{ display:none; \}/)
 })
 
-test('frontend moves the Agent below the workbench instead of covering A4 on narrow screens', async () => {
+test('frontend moves the full-height Agent below the workbench on narrow screens', async () => {
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
-  assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\); grid-template-rows:auto auto; height:100dvh; overflow:auto;/)
-  assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:1 \/ -1; grid-row:2;/)
+  assert.match(css, /\.app-shell\.assistant-open \.main-stage \{ grid-column:3; grid-row:1; height:auto; min-height:100vh; \}/)
+  assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ grid-column:1 \/ -1; grid-row:2; width:auto; height:min\(680px,70dvh\);/)
   assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ display:none; \}/)
-  assert.match(css, /@media \(max-width:700px\) \{[\s\S]*?\.app-shell\.assistant-open \{ display:block; height:auto;/)
+})
+
+test('frontend keeps three columns for desktop-sized 961-1100px viewports', async () => {
+  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\) 8px minmax\(280px,min\(var\(--assistant-width\),32vw\)\);/)
+  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 8px minmax\(0,1fr\); \}/)
+  assert.match(css, /\.app-shell\.assistant-open \.direct-preview-pane \{ grid-column:auto; grid-row:auto; \}/)
+  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ grid-template-columns:minmax\(0,1fr\) 8px minmax\(0,1fr\); \}/)
+  assert.match(css, /\.app-shell\.assistant-open \.workbench-split \{ width:100%; height:calc\(100dvh - 122px\); grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 8px minmax\(0,1fr\); \}/)
 })
 
 test('frontend keeps the measured A4 fit when Agent is open on desktop widths', async () => {
@@ -29,7 +41,7 @@ test('frontend route changes reset scroll and SSE proxy tolerates client disconn
   const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
   const proxy = await fs.readFile(path.join(frontendRoot, 'server.mjs'), 'utf8')
   assert.match(app, /function renderRoute\(route\) \{[\s\S]*?\$\('#routeView'\)\.scrollTop = 0/)
-  assert.match(app, /async function renderTemplates\(\) \{[\s\S]*?view\.scrollTop = 0/)
+  assert.match(app, /async function renderTemplates\(\) \{[\s\S]*?const viewport = \$\('#routeView'\)[\s\S]*?viewport\.scrollTop = 0/)
   assert.match(proxy, /if \(response\.headersSent \|\| response\.destroyed \|\| response\.writableEnded \|\| request\.aborted\)/)
   assert.match(proxy, /proxyLog\('info', 'api_proxy_client_closed'/)
 })

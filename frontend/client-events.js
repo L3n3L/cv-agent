@@ -25,7 +25,7 @@
       const blob = new Blob([body], { type: 'application/json' })
       if (navigator.sendBeacon?.(endpoint, blob)) return
       void fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {})
-    } catch {}
+    } catch { /* telemetry must never break the application */ }
   }
 
   globalThis.CVAgent = globalThis.CVAgent || {}

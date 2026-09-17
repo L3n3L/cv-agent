@@ -1,4 +1,4 @@
-# CVAgent Fullstack
+# CVAgent
 
 CVAgent 的单仓库前后端工程。前端和后端目录职责明确，插件源码不进入本仓库运行时。
 

@@ -56,4 +56,4 @@ createServer(async (request, response) => {
   if (!file.startsWith(root)) { response.writeHead(403); response.end('Forbidden'); return }
   try { const body = await readFile(file); response.writeHead(200, { 'Content-Type': types[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' }); response.end(body) }
   catch { response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('Not Found') }
-}).listen(port, '127.0.0.1', () => console.log(`CVAgent Frontend: http://127.0.0.1:${port}/`))
+}).listen(port, '127.0.0.1', () => proxyLog('info', 'frontend_started', { port, apiOrigin }))

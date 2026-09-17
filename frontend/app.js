@@ -39,6 +39,9 @@ const api = window.cvAgentApi
 let measurementInFlightKey = ''
 let workflowEventSource = null
 let workflowEventSessionId = ''
+let previewResizeObserver = null
+
+const A4_PREVIEW_SIZE = Object.freeze({ width: 794, height: 1123 })
 
 function previewUrl() {
   return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
@@ -131,6 +134,36 @@ function syncPreviewFrames() {
     frame.replaceWith(empty)
   })
   syncTemplatePreviewFrames()
+}
+
+function fitPreviewFrame(frame) {
+  const stage = frame.closest('.direct-preview-stage, .full-preview-canvas')
+  if (!stage) return
+  const stageStyle = window.getComputedStyle(stage)
+  const horizontalPadding = Number.parseFloat(stageStyle.paddingLeft || '0') + Number.parseFloat(stageStyle.paddingRight || '0')
+  const availableWidth = Math.max(1, stage.clientWidth - horizontalPadding)
+  const scale = Math.min(1, availableWidth / A4_PREVIEW_SIZE.width)
+  frame.style.setProperty('--preview-scale', scale.toFixed(4))
+  frame.style.setProperty('--preview-width', `${Math.round(A4_PREVIEW_SIZE.width * scale)}px`)
+  frame.style.setProperty('--preview-height', `${Math.round(A4_PREVIEW_SIZE.height * scale)}px`)
+}
+
+function fitPreviewFrames() {
+  $$('.direct-preview-stage, .full-preview-canvas').forEach((stage) => {
+    const frame = stage.querySelector('.direct-preview-frame-wrap, .full-real-frame-wrap')
+    if (frame) fitPreviewFrame(frame)
+  })
+}
+
+function bindPreviewFit() {
+  previewResizeObserver?.disconnect()
+  previewResizeObserver = null
+  const stages = $$('.direct-preview-stage, .full-preview-canvas')
+  if (typeof ResizeObserver === 'function') {
+    previewResizeObserver = new ResizeObserver(() => fitPreviewFrames())
+    stages.forEach((stage) => previewResizeObserver.observe(stage))
+  }
+  fitPreviewFrames()
 }
 
 function syncTemplatePreviewFrames() {
@@ -727,6 +760,7 @@ function renderWorkbench() {
   $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b data-template-name>${escapeHtml(liveState.templateName || liveState.templateId)}</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span><button class="ghost-button" type="button" data-toggle-tuning>手动微调</button></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div><div class="presentation-panel" id="presentationPanel" hidden><div class="presentation-panel-head"><b>手动微调</b><button class="ghost-button" type="button" data-close-tuning>关闭</button></div><p>只修改当前会话的隔离版式，不覆盖源文件。</p><div class="tuning-grid"><label>字号<input id="tuningFontSize" type="number" min="11" max="18" step="0.5" value="13"></label><label>行高<input id="tuningLineHeight" type="number" min="1.2" max="2" step="0.05" value="1.5"></label><label>段落间距<input id="tuningSectionGap" type="number" min="6" max="30" step="1" value="16"></label><label>页边距<input id="tuningPageMargin" type="number" min="24" max="72" step="1" value="38"></label></div><button class="primary-small" id="applyTuning" type="button">应用并重新渲染</button></div></section></div></div>`
   syncPreviewFrames()
   applyLayoutPrefs()
+  bindPreviewFit()
   if (liveState.sourceContent) $('#resumeEditor').value = liveState.draftContent || liveState.sourceContent
   const tuningLayout = liveState.presentation?.layout || {}
   for (const [id, key] of [['tuningFontSize', 'fontSize'], ['tuningLineHeight', 'lineHeight'], ['tuningSectionGap', 'sectionGap'], ['tuningPageMargin', 'pageMargin']]) {
@@ -743,6 +777,7 @@ function renderWorkbench() {
 function renderPreview() {
   $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> <span data-full-preview-status>等待渲染</span></span><button class="primary-small" type="button">重新渲染</button></div></div>`
   syncPreviewFrames()
+  bindPreviewFit()
 }
 
 function templateCard(template) {

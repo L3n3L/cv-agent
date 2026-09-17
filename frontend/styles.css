@@ -202,6 +202,11 @@ body { letter-spacing:-.005em; }
 
 .preview-empty { display:grid; min-height:100%; place-items:center; padding:32px; color:#9aa3ad; background:#fbfcfd; font-size:13px; letter-spacing:.01em; text-align:center; }
 
+/* The A4 paper and iframe share one measured fit-to-width scale. */
+.direct-preview-stage,.full-preview-canvas { overflow:auto; }
+.direct-preview-frame-wrap,.full-real-frame-wrap { width:var(--preview-width,429px); height:var(--preview-height,607px); transform:none; margin-bottom:0; }
+.direct-preview-frame-wrap iframe,.full-real-frame { width:794px; height:1123px; transform:scale(var(--preview-scale,.54)); transform-origin:top left; }
+
 /* Agent process stream: Codex-like restraint, with the resume workflow kept visible. */
 .assistant-drawer {
   --blue:var(--ink);

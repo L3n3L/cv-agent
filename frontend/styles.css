@@ -262,6 +262,9 @@ body { letter-spacing:-.005em; }
 .assistant-drawer .tool-state.blocked { background:#4e565e; }
 .assistant-drawer .tool-state.running { animation:agent-tool-pulse 1s ease-in-out infinite; }
 .assistant-drawer .tool-detail { margin:0 0 6px 13px; padding:4px 0 4px 10px; border-left:1px solid #eceeef; color:#8a929a; font:9px/1.55 "IBM Plex Mono",monospace; }
+.assistant-drawer .tool-detail-item { display:flex; gap:8px; min-height:17px; align-items:baseline; }
+.assistant-drawer .tool-detail-item b { min-width:58px; color:#6d767e; font-weight:500; }
+.assistant-drawer .tool-detail-item > span { min-width:0; overflow-wrap:anywhere; color:#8a929a; }
 .assistant-drawer .tool-empty { color:#9299a0; font:10px/1.6 "IBM Plex Mono",monospace; }
 .assistant-drawer .next-action { display:flex; align-items:baseline; gap:9px; margin:0 0 20px; padding-top:4px; color:#878f97; font:10px "IBM Plex Mono",monospace; }
 .assistant-drawer .next-action b { color:#4e565e; font-weight:500; }

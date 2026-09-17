@@ -40,8 +40,10 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
   await emit('started')
   try {
     const result = await handler(task)
-    await logger.info('tool_call_succeeded', { ...base, durationMs: Date.now() - startedAt, resultSummary: options.resultSummary?.(result) || {} })
-    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), durationMs: Date.now() - startedAt })
+    const resultSummary = options.resultSummary?.(result) || {}
+    const durationMs = Date.now() - startedAt
+    await logger.info('tool_call_succeeded', { ...base, durationMs, resultSummary })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), durationMs, resultSummary })
     await emit('succeeded', result)
     await options.onSuccess?.({ toolName: String(toolName), result, task })
     return result

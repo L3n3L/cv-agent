@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { sanitizeLogValue } from './logger.js'
+import { safeWorkflowSummary } from './workflow-summary.js'
 import { writeAtomic } from './workspace.js'
 
 const SESSION_ID_PATTERN = /^session_[A-Za-z0-9_-]+$/
@@ -37,6 +38,8 @@ function safeWorkflowEvent(event) {
   for (const key of allowed) {
     if (event[key] !== undefined && event[key] !== null) value[key] = event[key]
   }
+  const resultSummary = safeWorkflowSummary(event.resultSummary)
+  if (resultSummary) value.resultSummary = resultSummary
   return value.event ? value : null
 }
 

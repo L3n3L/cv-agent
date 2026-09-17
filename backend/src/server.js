@@ -12,6 +12,7 @@ import { clientEventErrorCode, parseClientEvent } from './core/client-events.js'
 import { emitWorkflowEvent, WORKFLOW_EVENTS } from './core/event-catalog.js'
 import { assertSessionScope, createResumeSession, withSessionLock } from './core/session.js'
 import { createSessionStore } from './core/session-store.js'
+import { safeWorkflowSummary } from './core/workflow-summary.js'
 import { createResumeToolHandlers, createResumeTools } from './agent/resume-tools.js'
 import { measureSchema, presentationSchema, qualitySchema, templateCopySchema, templateSelectSchema, writeSchema } from './agent/schemas.js'
 import { archiveResumeVersion, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
@@ -87,6 +88,7 @@ async function notifyWorkflowEvent(handler, payload) {
 async function publishWorkflowEvent(broker, session, event = {}, sessionStore = null) {
   if (!broker || !session?.sessionId || !event?.event) return
   const task = event.task || session.taskRef?.current || {}
+  const resultSummary = safeWorkflowSummary(event.resultSummary)
   const payload = {
     timestamp: new Date().toISOString(),
     event: event.event,
@@ -97,6 +99,7 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
     ...(event.outcome ? { outcome: event.outcome } : {}),
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+    ...(resultSummary ? { resultSummary } : {}),
   }
   session.workflowEvents = [...(Array.isArray(session.workflowEvents) ? session.workflowEvents : []), payload].slice(-240)
   await persistSession(sessionStore, session).catch(() => {})

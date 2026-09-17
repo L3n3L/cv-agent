@@ -36,6 +36,30 @@
     idle: '等待',
   }
 
+  const summaryLabels = {
+    prepared: '准备结果',
+    targetPages: '目标页数',
+    fileName: '文件',
+    fileCount: '材料数量',
+    truncated: '列表已截断',
+    bytes: '文件大小',
+    headingCount: '标题数量',
+    passed: '检查通过',
+    score: '评分',
+    warningCount: '警告数',
+    templateCount: '模板数量',
+    templateId: '模板',
+    templateRevision: '模板版本',
+    state: '状态',
+    sourcePreserved: '源文件保留',
+    contentVersion: '内容版本',
+    renderId: '渲染版本',
+    pageCount: '页数',
+    occupancy: '页面占用',
+    blockerCount: '阻断数',
+    createdAsCopy: '已创建副本',
+  }
+
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (character) => ({
       '&': '&amp;',
@@ -159,16 +183,39 @@
   function eventGroups(events) {
     const groups = []
     const byKey = new Map()
+    const runSequences = new Map()
+    const activeKeys = new Map()
     for (const event of Array.isArray(events) ? events : []) {
-      const key = String(event.runId || event.taskId || 'current')
+      const baseKey = String(event.runId || event.taskId || 'current')
+      if (event.event === 'agent_run_started') {
+        const sequence = (runSequences.get(baseKey) || 0) + 1
+        runSequences.set(baseKey, sequence)
+        activeKeys.set(baseKey, `${baseKey}:${sequence}`)
+      }
+      const key = activeKeys.get(baseKey) || `${baseKey}:0`
       if (!byKey.has(key)) {
-        const group = { key, events: [] }
+        const group = { key, runId: baseKey, events: [] }
         byKey.set(key, group)
         groups.push(group)
       }
       byKey.get(key).events.push(event)
     }
     return groups
+  }
+
+  function formatSummaryValue(key, value) {
+    if (typeof value === 'boolean') return value ? '是' : '否'
+    if (key === 'occupancy' && Array.isArray(value)) return value.map((item) => `${Math.round(Number(item) * 100)}%`).join(' / ')
+    if (key === 'bytes') return `${value} B`
+    return String(value ?? '')
+  }
+
+  function renderToolSummary(summary) {
+    if (!summary || typeof summary !== 'object') return ''
+    const items = Object.entries(summary)
+      .filter(([key, value]) => summaryLabels[key] && value !== undefined && value !== null)
+      .map(([key, value]) => `<span class="tool-detail-item"><b>${escapeHtml(summaryLabels[key])}</b><span>${escapeHtml(formatSummaryValue(key, value))}</span></span>`)
+    return items.length ? `<div class="tool-detail">${items.join('')}</div>` : ''
   }
 
   function processRows(events) {
@@ -179,7 +226,7 @@
       if (event.event === 'agent_run_started' || event.event === 'agent_run_finished') continue
       const key = isTool ? `tool:${event.toolName || 'agent'}` : `event:${event.event}`
       if (!rowByKey.has(key)) {
-        const row = { key, label: isTool ? (toolLabels[event.toolName] || event.toolName || 'Agent 工具') : (eventLabels[event.event] || 'Agent 处理'), state: 'running', detail: '', timestamp: event.timestamp, durationMs: null }
+        const row = { key, label: isTool ? (toolLabels[event.toolName] || event.toolName || 'Agent 工具') : (eventLabels[event.event] || 'Agent 处理'), state: 'running', detail: '', summary: null, timestamp: event.timestamp, durationMs: null }
         rowByKey.set(key, row)
         rows.push(row)
       }
@@ -190,6 +237,7 @@
       if (event.event === 'tool_call_failed' || event.event === 'render_failed' || event.event === 'verification_failed' || event.event === 'verification_blocked' || event.event === 'source_changed') row.state = 'blocked'
       if (event.event === 'tool_call_started' || event.event === 'render_started') row.state = 'running'
       if (event.errorCode) row.detail = event.errorCode
+      if (event.resultSummary) row.summary = event.resultSummary
       if (event.outcome === 'failed') row.state = 'blocked'
     }
     return rows
@@ -208,7 +256,7 @@
     const rows = processRows(group.events)
     const statusText = statusLabels[status] || status
     const runRows = rows.length ? rows.map((row) => {
-      const detail = row.detail ? `<div class="tool-detail">${escapeHtml(row.detail)}</div>` : ''
+      const detail = `${renderToolSummary(row.summary)}${row.detail ? `<div class="tool-detail">${escapeHtml(row.detail)}</div>` : ''}`
       const duration = row.durationMs !== null && row.durationMs !== undefined ? `${Math.max(0, Math.round(Number(row.durationMs) || 0))} ms` : ''
       return `<details class="tool-row" ${row.state === 'blocked' ? 'open' : ''}><summary><i class="tool-state ${escapeHtml(row.state)}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><time>${escapeHtml(duration || statusLabels[row.state] || '')}</time></summary>${detail}</details>`
     }).join('') : '<div class="tool-empty">Agent 正在准备当前简历流程…</div>'

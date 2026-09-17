@@ -1240,9 +1240,11 @@ connection-status
 
 - `frontend/agent-chat.js`：独立负责 Agent Markdown 渲染、用户消息、工具组、工具行、下一步提示和错误节点；不把不可信 Agent 文本直接作为 HTML 注入。
 - 时间线采用“用户消息 → Agent 说明 → 本轮工具组 → Agent 结果”的真实插入顺序；工具组不再统一追加到所有消息末尾，多轮会话按用户轮次分别插入。
+- 工具组内的工具行也可继续展开；成功工具只显示后端白名单裁剪后的摘要（如文件名、评分、警告数、目标页数和耗时），不显示原始简历内容、绝对路径或任意工具 payload。
 - `frontend/app.js`：保留现有会话和 SSE 接入，但把事件接入统一时间线；输入、发送、重渲染不会丢失输入内容和滚动位置。
 - `frontend/styles.css`：删除旧的 `run-card`、`turn-progress` 和扫描渐变规则；Agent 抽屉改成白底、浅灰分隔、深灰正文的文档流。工具组外层可折叠，单个工具行仍可独立展开。
 - `backend/src/core/session-store.js`：会话快照持久化最多 240 条经过白名单裁剪的 workflow event；旧 session 没有该字段时按空数组兼容。
+- `backend/src/core/workflow-summary.js` / `backend/src/core/tool-runner.js`：工具成功结果经过固定字段、长度、类型和文件名裁剪后才进入 SSE 与 Session 快照；多轮相同任务上下文的事件按 `agent_run_started` 边界拆成独立工具组。
 - `backend/src/server.js`：SSE workflow event 在发送给浏览器前同步写入当前 session，并通过 `/api/session` 返回；bootstrap 也返回初始工具记录。
 - `frontend/fixtures/agent-chat-states.json`：固定 empty/running/blocked/accepted 状态，供后续视觉回归使用。
 
@@ -1252,6 +1254,7 @@ connection-status
 - `node --check`：前后端改动文件通过；`git diff --check` 通过。
 - 浏览器路径：打开 `.test-import` → 打开 Agent → 发送只读检查 → 等待 Agent 完成 → 截图 → 展开/收起“本轮简历制作” → 刷新页面 → 恢复同一会话。
 - 恢复后的 ARIA 快照仍显示用户消息、Agent Markdown 消息和“本轮简历制作 · 已执行 4 项工具 · 完成”折叠节点；展开后显示准备任务、读取简历、检查内容、读取工作区材料四个工具行。
+- 真实会话二次只读检查截图验证：第二轮工具组位于第二轮 Agent 结果之前；展开“检查简历内容”后显示“文件 resume.md / 检查通过 / 评分 84 / 警告数 2”等安全摘要。
 - 浏览器控制台 error/warning：空。
 
 ### 当前边界

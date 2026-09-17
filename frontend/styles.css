@@ -207,6 +207,20 @@ body { letter-spacing:-.005em; }
 .direct-preview-frame-wrap,.full-real-frame-wrap { width:var(--preview-width,429px); height:var(--preview-height,607px); transform:none; margin-bottom:0; }
 .direct-preview-frame-wrap iframe,.full-real-frame { width:794px; height:1123px; transform:scale(var(--preview-scale,.54)); transform-origin:top left; }
 
+/* A narrow Agent view must consume layout space instead of covering the workbench. */
+@media (max-width:1100px) {
+  .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto auto; height:100dvh; overflow:auto; align-content:start; }
+  .app-shell.assistant-open .main-stage { grid-column:3; grid-row:1; height:100%; min-height:0; }
+  .app-shell.assistant-open .resize-assistant { display:none; }
+  .app-shell.assistant-open .assistant-drawer { position:static; grid-column:1 / -1; grid-row:2; width:auto; height:min(680px,70dvh); min-height:420px; transform:none; border-top:1px solid var(--line); border-left:0; box-shadow:none; }
+}
+
+@media (max-width:700px) {
+  .app-shell.assistant-open { display:block; height:auto; min-height:100vh; overflow:visible; }
+  .app-shell.assistant-open .main-stage { height:auto; min-height:100vh; }
+  .app-shell.assistant-open .assistant-drawer { width:100%; }
+}
+
 /* Agent process stream: Codex-like restraint, with the resume workflow kept visible. */
 .assistant-drawer {
   --blue:var(--ink);

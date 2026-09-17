@@ -11,6 +11,14 @@ test('frontend keeps the editor, resize handle, and preview in three tracks with
   assert.match(css, /\.app-shell\.sidebar-collapsed\.assistant-open \{ grid-template-columns:0 0 minmax\(0,1fr\) 8px var\(--assistant-width\); \}/)
 })
 
+test('frontend moves the Agent below the workbench instead of covering A4 on narrow screens', async () => {
+  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\); grid-template-rows:auto auto; height:100dvh; overflow:auto;/)
+  assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:1 \/ -1; grid-row:2;/)
+  assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ display:none; \}/)
+  assert.match(css, /@media \(max-width:700px\) \{[\s\S]*?\.app-shell\.assistant-open \{ display:block; height:auto;/)
+})
+
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {
   const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
   const proxy = await fs.readFile(path.join(frontendRoot, 'server.mjs'), 'utf8')

@@ -5,7 +5,7 @@ CVAgent 的单仓库前后端工程。前端和后端目录职责明确，插件
 ## 目录
 
 ```text
-frontend/   # demo v2 收敛后的正式 Web 前端
+frontend/   # 正式 Web 前端
 backend/    # CVAgent API、Agent、工作区、模板、渲染和会话后端
 ```
 

@@ -303,7 +303,7 @@ $$('.session-item').forEach((item) => item.addEventListener('click', () => { cur
 $('#drawerClose').addEventListener('click', () => setPreviewOpen(false))
 $('#workspaceSwitcher').addEventListener('click', () => { const button = $('#workspaceSwitcher'); const menu = $('#workspaceMenu'); const open = button.getAttribute('aria-expanded') === 'true'; button.setAttribute('aria-expanded', String(!open)); menu.hidden = open })
 $$('[data-workspace]').forEach((button) => button.addEventListener('click', () => { $('#workspaceLabel').textContent = button.dataset.workspace; $('#workspaceMenu').hidden = true; $('#workspaceSwitcher').setAttribute('aria-expanded', 'false'); showToast(`已绑定工作区「${button.dataset.workspace}」`) }))
-$('#newSession').addEventListener('click', () => showToast('Demo：已准备新会话入口'))
+$('#newSession').addEventListener('click', () => showToast('已准备新会话入口'))
 
 bindResizableLayout()
 renderRoute('workbench')

@@ -5,12 +5,12 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
-const port = Number(process.env.CVAGENT_DEMO_PORT || 3191)
+const port = Number(process.env.CVAGENT_FRONTEND_PORT || 3191)
 const apiOrigin = String(process.env.CVAGENT_API_ORIGIN || 'http://127.0.0.1:3180').replace(/\/+$/, '')
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' }
 
 function proxyLog(level, event, fields = {}) {
-  process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level, event, component: 'cvagent-demo-proxy', ...fields })}\n`)
+  process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level, event, component: 'cvagent-frontend-proxy', ...fields })}\n`)
 }
 
 async function readRequestBody(request) {
@@ -56,4 +56,4 @@ createServer(async (request, response) => {
   if (!file.startsWith(root)) { response.writeHead(403); response.end('Forbidden'); return }
   try { const body = await readFile(file); response.writeHead(200, { 'Content-Type': types[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' }); response.end(body) }
   catch { response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('Not Found') }
-}).listen(port, '127.0.0.1', () => console.log(`CVAgent Demo v2: http://127.0.0.1:${port}/`))
+}).listen(port, '127.0.0.1', () => console.log(`CVAgent Frontend: http://127.0.0.1:${port}/`))

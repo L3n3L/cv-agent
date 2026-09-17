@@ -6,7 +6,7 @@
 
 允许存在的差异只有真实数据带来的差异，例如当前工作区名称、会话数量、模板数量、排版状态和版本记录。不得保留 demo 的固定会话、假状态或假预览结果。
 
-## 2. 现状判断
+## 2. 现状判断（2026-09-17 复核）
 
 ### CVAgent
 
@@ -16,7 +16,9 @@ CVAgent 已经具备可直接承载 demo UI 的后端边界：
 - `src/core/session.js`、`src/core/session-store.js` 负责会话范围、恢复和并发锁；
 - `src/agent/resume-tools.js` 负责简历制作工具和工作流约束；
 - `src/migrated/resume-engine/` 负责真实模板与 A4 渲染；
-- `public/app.js` 已经连接上述 API，现阶段主要问题是页面壳层仍混合了旧布局和新工作台。
+- `src/agent/deep-agent.js` 已接入 `deepagents` Harness，真实模型调用和工具循环可运行；
+- 当前真实前端在同仓库 `frontend/`，已经连接工作区导入、bootstrap、源文件、Agent、draft/render 和 A4 iframe 测量；
+- 当前主要问题不再是“前端完全没有接线”，而是正式保存、测量后的 Agent 续跑、模板/检查/版本页面仍未完全接入。
 
 ### demo v2
 
@@ -26,7 +28,7 @@ demo v2 是视觉与交互样本，不是生产后端：
 - `server.mjs` 只提供静态资源和演示模板渲染；
 - 没有真实 Agent 调用、会话持久化、工作区导入、测量回传和正式版本保存。
 
-因此不能把 demo 的 `app.js` 直接覆盖到 CVAgent，也不能把 demo 的 `server.mjs` 当作业务后端。正确关系是：demo 负责视觉基线，CVAgent 负责业务真相。
+因此不能把 demo 的 `app.js` 直接覆盖到 CVAgent，也不能把 demo 的 `server.mjs` 当作业务后端。当前正确关系是：`frontend/` 负责视觉和交互编排，CVAgent backend 负责业务真相；此前“前端仍是纯静态 demo”的审计结论已经过时。
 
 ## 3. 对接原则
 
@@ -48,11 +50,11 @@ demo v2 是视觉与交互样本，不是生产后端：
 | Markdown 编辑 | `GET /api/source`、`POST /api/agent/draft` |
 | A4 预览 | `POST /api/agent/bootstrap`、`POST /api/agent/render`、`GET /api/agent/preview` |
 | Agent 对话 | `POST /api/agent/run` |
-| 模板库 | `GET /api/templates`、`GET /api/template`、模板复制/保存接口 |
+| 模板库 | `GET /api/templates`、`GET /api/template`、模板复制/保存接口；当前页面仍有硬编码卡片 |
 | 排版检查 | `POST /api/agent/quality`、`POST /api/agent/measure` |
-| 投递版本 | `GET /api/versions`、`GET /api/version`、版本改名/归档/保存接口 |
+| 投递版本 | `GET /api/versions`、`GET /api/version`、版本改名/归档/保存接口；当前页面仍有静态版本行 |
 
-当前第一阶段采用请求完成后更新 UI 的方式。若需要像 Codex 一样在 Agent 执行过程中实时显示工具步骤，再新增按 `sessionId` 订阅的事件流；这属于 CVAgent 后端的增量能力，不需要迁移后端。
+当前第一阶段采用请求完成后更新 UI 的方式。工作区、bootstrap、源文件、Agent、draft/render 和预览测量已进入真实请求链；测量回传目前仍需要修正状态一致性，并在测量完成后触发 Agent 续跑。若需要像 Codex 一样在 Agent 执行过程中实时显示工具步骤，再新增按 `sessionId` 订阅的事件流；这属于 CVAgent 后端的增量能力，不需要迁移后端。
 
 ## 5. Git 仓库决策
 
@@ -96,22 +98,30 @@ demo v2 是视觉与交互样本，不是生产后端：
 
 ## 8. 实施顺序
 
-### 第一阶段：前后端边界与真实 API 接通
+### 第一阶段：前后端边界与真实 API 接通（已完成最小闭环）
 
 - 保持 demo v2 的 HTML/CSS/交互作为视觉基线，不再继续扩展 CVAgent 旧前端；
 - demo server 已增加 `/api/*` 到 CVAgent 的开发期代理；
 - 增加统一 API Client，集中处理工作区、会话、源文件、模板、预览、Agent、检查和版本接口；
-- 清理前端 fixture 和不可执行动作，接入真实 API；
-- 保留真实工作区选择器、会话恢复、模板库、预览、排版微调和版本保存行为。
+- 清理前端核心工作台的假响应，接入真实 API；
+- 已完成工作区导入、session bootstrap、源文件加载、真实 Agent 对话、draft/render 和真实 A4 iframe；
+- 模板库、排版检查、投递版本和正式保存仍需逐项接通，不能以静态卡片代替真实业务。
 
-### 第二阶段：真实会话镜像
+### 第二阶段：交付闭环补齐（当前执行）
 
-- 侧栏会话列表改为由 `/api/sessions` 生成；
-- 当前会话标题、工作区、模板和状态来自 session/context；
-- Agent 消息与工具结果按真实 session 数据呈现；
-- 补齐异常、恢复和空状态。
+- 修复 iframe 测量回传的 `sessionId/renderId/contentVersion/templateRevision` 一致性；
+- 增加测量完成后的 Agent 续跑或可恢复 continuation，完成 `render → measure → finalize`；
+- 正式版本保存必须绑定 `accepted` 状态和用户确认，并在前端提供真实入口；
+- 当前会话标题、工作区、模板和状态继续以 session/context 为唯一来源。
 
-### 第三阶段：实时工具过程
+### 第三阶段：真实资源页
+
+- 模板库改为读取 `/api/templates`，选择模板后调用真实 template API 并重新渲染；
+- 排版检查页读取当前 session 的 quality/measurement/verification，不再展示固定阻断项；
+- 投递版本页读取 `/api/versions`，接通打开、改名、归档和创建正式版本；
+- 清理仅为演示保留的静态会话、模板、检查和版本数据。
+
+### 第四阶段：实时工具过程
 
 - 从现有 workflow event catalog 提供轻量事件订阅；
 - 前端按 started/completed/failed 更新工具行；
@@ -132,15 +142,17 @@ demo v2 是视觉与交互样本，不是生产后端：
 
 CVAgent 现有日志模块已经具备脱敏、滚动和保留能力，前端代理也已加入结构化请求日志；后续新增接口沿用同一事件命名。
 
-## 10. 验收清单
+## 10. 当前验收清单
 
-- [ ] CVAgent 首页视觉上与 demo v2 同一套壳层；
-- [ ] 选择工作区后真实读取 `resume.md` 并生成 A4 预览；
-- [ ] Agent 输入真实调用 CVAgent，并在同一会话中返回结果；
-- [ ] Markdown 草稿修改会重新渲染真实预览；
+- [x] CVAgent 首页视觉上与 demo v2 同一套壳层；
+- [x] 选择工作区后真实读取 `resume.md` 并生成 A4 预览；
+- [x] Agent 输入真实调用 CVAgent，并在同一会话中返回结果；
+- [x] Markdown 草稿修改会重新渲染真实预览；
+- [ ] iframe 测量结果稳定写入当前 session，并能驱动 Agent 继续 finalize；
+- [ ] 用户确认后可以从当前 accepted session 保存正式版本；
 - [ ] 模板库显示真实模板并可应用；
 - [ ] 预览、编辑区、侧栏和 Agent 抽屉可收放/拖拽；
-- [ ] 会话刷新后可以恢复；
+- [x] 会话刷新后可以恢复；
 - [ ] 验收通过后才能保存正式版本；
 - [ ] 旧的手动排版微调能力没有被视觉重构隐藏或删除；
 - [ ] 浏览器控制台没有新增错误，现有单元测试通过。
@@ -152,3 +164,9 @@ CVAgent 现有日志模块已经具备脱敏、滚动和保留能力，前端代
 - 不把 dsh-resume 的 MCP Server 当作 CVAgent 的 UI 后端；
 - 不在 UI 重构阶段引入 React/Vite 或重新搭建工程；
 - 不为了视觉相似而伪造页数、测量结果、会话状态或版本状态。
+
+## 12. 本轮结论
+
+此前“后端基本都有、前端只接了空态和错误上报”的判断只适用于接线前快照，当前已被 `8e7d772` 的真实前端接线提交修正。现在的准确定位是：CVAgent 已具备可用的工作台最小链路，剩余工作集中在交付闭环、真实资源页和 Agent 续跑，而不是重新迁移后端。
+
+本轮开发原则：`deepagents` 负责规划和工具循环，Skill 负责可变的简历业务判断，工具和后端状态机负责不可绕过的事实与完成门。不要把 DSH 的全部 MCP 指南机械复制进每轮 Prompt，也不能因为使用成熟 Harness 就省略 `resume_metrics`、用户确认和正式保存等真实业务节点。

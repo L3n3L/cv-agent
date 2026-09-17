@@ -10,7 +10,7 @@ const RESERVED_FIELDS = new Set(['timestamp', 'level', 'event', 'component', 'pi
 const REDACT_KEY = /(?:content(?!version|hash|id|length|count)|markdown|html|prompt|messages|secret|password|token|api[_-]?key|access[_-]?token|authorization|cookie|private[_-]?key|credential)/i
 const SECRET_TOKEN_PATTERN = /\b(?:sk|rk)-[a-z0-9_-]{12,}/gi
 const BEARER_PATTERN = /\bbearer\s+[^\s,;)}\]]+/gi
-const ASSIGNMENT_SECRET_PATTERN = /((?:api[_-]?key|access[_-]?token|token|password)\s*[:=]\s*)[^\s,;)}\]]+/gi
+const ASSIGNMENT_SECRET_PATTERN = /((?:api[_-]?key|access[_-]?token|token|password)\s*[:=]\s*)[^\s,;)}\]\[]+/gi
 const LOG_FILE_PATTERN = /^agent-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.ndjson$/
 
 function redactString(value) {

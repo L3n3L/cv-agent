@@ -8,6 +8,7 @@ import { contextFields } from './core/context.js'
 import { contentHash } from './core/content.js'
 import { parseJsonBody, readJsonBody, requestRoute, sendJson } from './core/http.js'
 import { createLogger } from './core/logger.js'
+import { clientEventErrorCode, parseClientEvent } from './core/client-events.js'
 import { emitWorkflowEvent, WORKFLOW_EVENTS } from './core/event-catalog.js'
 import { assertSessionScope, createResumeSession, withSessionLock } from './core/session.js'
 import { createSessionStore } from './core/session-store.js'
@@ -98,6 +99,10 @@ export function createServer(options = {}) {
       sendJson(response, 200, { ok: true, product: 'CVAgent' })
       return
     }
+    if (request.method === 'POST' && request.url === '/api/client-events') {
+      void handleClientEvent(request, response, { serverLogger: requestLogger })
+      return
+    }
     if (request.method === 'GET' && request.url?.startsWith('/api/sessions')) {
       void handleSessions(request, response, { sessionStore, workspaceRegistry })
       return
@@ -185,6 +190,17 @@ export function createServer(options = {}) {
   server.sessions = sessions
   server.workspaceRegistry = workspaceRegistry
   return server
+}
+
+async function handleClientEvent(request, response, options) {
+  try {
+    const event = parseClientEvent(await readJsonBody(request, 32 * 1024))
+    await options.serverLogger.warn('client_event_received', event)
+    sendJson(response, 202, { ok: true, accepted: true })
+  } catch (error) {
+    const errorCode = clientEventErrorCode(error)
+    sendJson(response, 400, { ok: false, errorCode, errorMessage: 'client event was rejected' })
+  }
 }
 
 async function resolveWorkspaceInput(input, workspaceRegistry) {

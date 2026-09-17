@@ -128,6 +128,8 @@ demo v2 是视觉与交互样本，不是生产后端：
 - 日志按天滚动、大小切分、保留期可配置，日志写入失败不能拖垮业务请求；
 - demo 代理和 CVAgent 后端使用同一个 requestId 串起一次调用。
 
+前端 `client-events.js` 自动捕获 JS 异常、未处理 Promise 异常和资源加载失败，通过 `POST /api/client-events` 上报；后端只接受白名单字段，使用 `client_event_received` 写入现有 logger。日志上报失败不能反向影响页面和业务请求。
+
 CVAgent 现有日志模块已经具备脱敏、滚动和保留能力，前端代理也已加入结构化请求日志；后续新增接口沿用同一事件命名。
 
 ## 10. 验收清单

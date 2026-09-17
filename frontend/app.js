@@ -16,9 +16,49 @@ const routeCopy = {
 let currentRoute = 'workbench'
 let currentSession = 'campus'
 let activeSessionId = ''
+const liveState = {
+  workspaceId: '',
+  workspace: null,
+  sessionId: '',
+  resumePath: 'resume.md',
+  sourceContent: '',
+  draftContent: '',
+  templateId: 'campus-standard',
+  renderId: '',
+  workflowState: 'intake',
+  measurement: null,
+  loading: false,
+}
+const api = window.cvAgentApi
 
 function previewUrl() {
   return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
+}
+
+function measurePreviewFrame(frame) {
+  if (!liveState.sessionId || !liveState.renderId || frame.dataset.measureBound === 'true') return
+  frame.dataset.measureBound = 'true'
+  frame.addEventListener('load', () => {
+    if (!liveState.sessionId || !liveState.renderId || frame.classList.contains('template-real-thumb')) return
+    const documentRoot = frame.contentDocument?.documentElement
+    const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
+    if (!documentRoot || !pages.length) return
+    const occupancy = pages.map((page) => {
+      const content = page.querySelector('.cvagent-resume-page-content') || page
+      const available = Math.max(1, content.clientHeight)
+      const used = Math.min(available, Math.max(content.scrollHeight, content.querySelector('.cvagent-resume-flow')?.scrollHeight || 0))
+      return Number(clamp(used / available, 0, 1).toFixed(3))
+    })
+    const pageCount = Number(documentRoot.dataset.pageCount || pages.length)
+    const overflow = documentRoot.dataset.pageOverflow === 'true' || pages.some((page) => page.scrollHeight > page.clientHeight + 1)
+    void api.post('/api/agent/measure', { sessionId: liveState.sessionId, renderId: liveState.renderId, pageCount, occupancy, overflow })
+      .then(({ body }) => {
+        liveState.measurement = body.measurement || null
+        liveState.workflowState = body.state || liveState.workflowState
+        updateHeader()
+      })
+      .catch((error) => showToast(`预览测量失败：${errorText(error)}`))
+  })
 }
 
 function syncPreviewFrames() {
@@ -26,6 +66,7 @@ function syncPreviewFrames() {
   $$('.direct-preview-stage iframe, .full-real-frame, .template-real-thumb').forEach((frame) => {
     if (src) {
       frame.src = src
+      measurePreviewFrame(frame)
       return
     }
     const empty = document.createElement('div')
@@ -34,6 +75,133 @@ function syncPreviewFrames() {
     empty.textContent = '选择工作区后显示真实预览'
     frame.replaceWith(empty)
   })
+}
+
+function currentSessionData() {
+  if (!liveState.workspace) return sessions[currentSession]
+  return {
+    title: liveState.workspace.name || '未命名工作区',
+    status: liveState.workflowState || '已连接',
+    meta: `${liveState.resumePath} · ${liveState.templateId} · A4`,
+  }
+}
+
+function errorText(error) {
+  const suffix = error?.requestId ? `（requestId: ${error.requestId}）` : ''
+  return `${error?.message || '请求失败'}${suffix}`
+}
+
+function updateConnectionStatus() {
+  const label = $('#workspaceLabel')
+  const connection = $('#connectionStatus')
+  if (liveState.workspace) {
+    if (label) label.textContent = liveState.workspace.name
+    if (connection) connection.textContent = `已连接 · ${liveState.workspace.name}`
+  } else {
+    if (label) label.textContent = '未选择工作区'
+    if (connection) connection.textContent = '等待选择工作区'
+  }
+}
+
+function renderWorkspaceOptions(workspaces) {
+  const container = $('#workspaceOptions')
+  if (!container) return
+  container.replaceChildren()
+  if (!workspaces.length) {
+    const empty = document.createElement('small')
+    empty.textContent = '尚未导入工作区'
+    container.append(empty)
+    return
+  }
+  for (const workspace of workspaces) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'workspace-option'
+    const name = document.createElement('span')
+    name.textContent = workspace.name || '未命名工作区'
+    const meta = document.createElement('small')
+    meta.textContent = `${workspace.resumeName || 'resume.md'} · ${workspace.fileCount || 0} 个文件`
+    button.append(name, meta)
+    button.addEventListener('click', () => {
+      $('#workspaceMenu').hidden = true
+      void bootstrapWorkspace(workspace)
+    })
+    container.append(button)
+  }
+}
+
+async function bootstrapWorkspace(workspace) {
+  if (!workspace?.id) return
+  liveState.loading = true
+  liveState.workspace = workspace
+  liveState.workspaceId = workspace.id
+  liveState.sessionId = ''
+  activeSessionId = ''
+  updateConnectionStatus()
+  showToast('正在加载工作区…')
+  try {
+    const { body } = await api.post('/api/agent/bootstrap', { workspaceId: workspace.id, targetPages: 1, templateId: liveState.templateId })
+    liveState.workspace = body.workspace || workspace
+    liveState.workspaceId = liveState.workspace.id
+    liveState.sessionId = body.sessionId
+    liveState.resumePath = body.source?.path || liveState.resumePath
+    liveState.sourceContent = body.source?.content || ''
+    liveState.draftContent = liveState.sourceContent
+    liveState.renderId = body.context?.renderId || ''
+    liveState.workflowState = body.state || 'drafting'
+    activeSessionId = liveState.sessionId
+    sessions[currentSession] = { title: liveState.workspace.name, status: liveState.workflowState, meta: `${liveState.resumePath} · ${liveState.templateId} · A4` }
+    updateConnectionStatus()
+    renderRoute('workbench')
+    showToast('工作区已连接，简历草稿和预览已加载')
+  } catch (error) {
+    liveState.workspace = null
+    liveState.workspaceId = ''
+    liveState.sessionId = ''
+    activeSessionId = ''
+    updateConnectionStatus()
+    showToast(`工作区加载失败：${errorText(error)}`)
+  } finally {
+    liveState.loading = false
+  }
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  return btoa(binary)
+}
+
+async function importSelectedWorkspace(fileList) {
+  const files = [...fileList]
+  if (!files.length) return
+  const supported = new Set(['.md', '.markdown', '.txt', '.json', '.css', '.csv', '.yaml', '.yml', '.gif', '.jpeg', '.jpg', '.png', '.webp'])
+  const firstRoot = files[0].webkitRelativePath?.split('/')[0] || '新工作区'
+  const payload = []
+  for (const file of files) {
+    const relativePath = file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(1).join('/') : file.name
+    const extension = `.${file.name.split('.').pop()?.toLowerCase()}`
+    if (!relativePath || !supported.has(extension)) continue
+    const binary = new Set(['.gif', '.jpeg', '.jpg', '.png', '.webp']).has(extension)
+    payload.push({ path: relativePath, encoding: binary ? 'base64' : 'utf8', content: binary ? arrayBufferToBase64(await file.arrayBuffer()) : await file.text() })
+  }
+  if (!payload.length) throw new Error('没有找到可导入的 Markdown、模板或素材文件')
+  const { body } = await api.post('/api/workspaces/import', { name: firstRoot, files: payload })
+  await bootstrapWorkspace(body.workspace)
+}
+
+async function loadWorkspaces() {
+  try {
+    const { body } = await api.get('/api/workspaces')
+    const workspaces = Array.isArray(body.workspaces) ? body.workspaces : []
+    renderWorkspaceOptions(workspaces)
+    if (workspaces[0]) await bootstrapWorkspace(workspaces[0])
+  } catch (error) {
+    renderWorkspaceOptions([])
+    showToast(`读取工作区失败：${errorText(error)}`)
+  }
 }
 let workbenchMode = 'chat'
 let previewOpen = false
@@ -170,14 +338,14 @@ function updateSessionStatus(status) {
 }
 
 function updateHeader() {
-  const data = sessions[currentSession]
+  const data = currentSessionData()
   const copy = routeCopy[currentRoute]
-  const routeStatus = { templates: '6 个模板', versions: '2 个正式版本', checks: '3 个阻断项' }
+  const routeStatus = { templates: '加载中', versions: '加载中', checks: '待检查' }
   $('#routeKicker').textContent = copy.kicker
   $('#routeTitle').textContent = currentRoute === 'workbench' ? data.title : copy.title
-  $('#routeStatus').textContent = routeStatus[currentRoute] || data.status
+  $('#routeStatus').textContent = currentRoute === 'workbench' ? data.status : routeStatus[currentRoute]
   $('#routeStatus').classList.toggle('neutral-status', Boolean(routeStatus[currentRoute] && currentRoute !== 'checks'))
-  $('#routeMeta').textContent = currentRoute === 'templates' || currentRoute === 'versions' ? '林能隆 · AI 产品经理校招 · 当前工作区' : data.meta
+  $('#routeMeta').textContent = currentRoute === 'templates' || currentRoute === 'versions' ? (liveState.workspace ? `${liveState.workspace.name} · 当前工作区` : '请先选择工作区') : data.meta
 }
 
 function setPreviewOpen(open) {
@@ -238,12 +406,39 @@ function renderEditor() {
     .replace('应用修改并重新渲染', '应用并重新渲染')
 }
 
+async function saveDraftAndRender(content) {
+  if (!liveState.sessionId) {
+    showToast('请先选择工作区并加载简历')
+    return
+  }
+  const button = $('#editorApply')
+  if (button) button.disabled = true
+  try {
+    const draftResponse = await api.post('/api/agent/draft', { sessionId: liveState.sessionId, content })
+    liveState.draftContent = content
+    liveState.workflowState = draftResponse.body.state || 'drafting'
+    const renderResponse = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
+    liveState.renderId = renderResponse.body.context?.renderId || liveState.renderId
+    liveState.workflowState = renderResponse.body.state || liveState.workflowState
+    syncPreviewFrames()
+    updateHeader()
+    $('#editorState').textContent = '已渲染 · 待测量'
+    showToast('草稿已保存并重新渲染')
+  } catch (error) {
+    $('#editorState').textContent = '渲染失败'
+    showToast(`保存或渲染失败：${errorText(error)}`)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
 function renderWorkbench() {
   $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span>草稿 · 2 页 / 目标 1 页</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> 实时渲染</span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
   syncPreviewFrames()
   applyLayoutPrefs()
+  if (liveState.sourceContent) $('#resumeEditor').value = liveState.draftContent || liveState.sourceContent
   $('#assistantContent').innerHTML = renderChatRefined()
-  $('#editorApply').addEventListener('click', () => { $('#editorState').textContent = '已应用 · 待渲染'; updateSessionStatus('草稿已更新 · 待渲染'); showToast('内容已写入当前会话草稿') })
+  $('#editorApply').addEventListener('click', () => { void saveDraftAndRender($('#resumeEditor').value) })
   bindChat()
   $('[data-open-full-preview]').addEventListener('click', () => renderRoute('preview'))
 }
@@ -277,6 +472,10 @@ function bindChat() {
     const input = $('#messageInput')
     const value = input.value.trim()
     if (!value) return
+    if (!liveState.sessionId) {
+      showToast('请先选择工作区并加载简历')
+      return
+    }
     const article = document.createElement('article')
     article.className = 'message user-message'
     article.setAttribute('aria-label', '用户消息')
@@ -294,16 +493,28 @@ function bindChat() {
     progress.innerHTML = '<i aria-hidden="true"></i><span>正在更新简历草稿</span><time>进行中</time>'
     stream.append(progress)
     progress.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    window.setTimeout(() => {
-      progress.classList.remove('is-running')
-      progress.innerHTML = '<i aria-hidden="true"></i><span>已记录修改要求，重新渲染后确认页数和成品效果</span><time>完成</time>'
-      const response = document.createElement('article')
-      response.className = 'message agent-message'
-      response.setAttribute('aria-label', 'Agent 消息')
-      response.innerHTML = '<div class="message-body"><div class="message-bubble">这条修改要求已加入当前会话。请继续编辑或应用草稿后查看最新成品。</div></div>'
-      stream.append(response)
-      response.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    }, 900)
+    void api.post('/api/agent/run', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
+      .then(({ body }) => {
+        liveState.workflowState = body.state || liveState.workflowState
+        liveState.renderId = body.context?.renderId || liveState.renderId
+        if (body.draft?.contentVersion) liveState.draftContent = $('#resumeEditor')?.value || liveState.draftContent
+        progress.classList.remove('is-running')
+        progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 已完成本轮处理</span><time>完成</time>'
+        const response = document.createElement('article')
+        response.className = 'message agent-message'
+        response.setAttribute('aria-label', 'Agent 消息')
+        response.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
+        response.querySelector('.message-bubble').textContent = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
+        stream.append(response)
+        response.scrollIntoView({ behavior: 'smooth', block: 'end' })
+        syncPreviewFrames()
+        updateHeader()
+      })
+      .catch((error) => {
+        progress.classList.remove('is-running')
+        progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 执行失败</span><time>失败</time>'
+        showToast(`Agent 执行失败：${errorText(error)}`)
+      })
   })
 }
 
@@ -325,8 +536,14 @@ $$('.nav-item').forEach((item) => item.addEventListener('click', () => renderRou
 $$('.session-item').forEach((item) => item.addEventListener('click', () => { currentSession = item.dataset.session; $$('.session-item').forEach((session) => session.classList.toggle('active', session === item)); renderRoute(currentRoute); showToast(`已切换到「${sessions[currentSession].title}」`) }))
 $('#drawerClose').addEventListener('click', () => setPreviewOpen(false))
 $('#workspaceSwitcher').addEventListener('click', () => { const button = $('#workspaceSwitcher'); const menu = $('#workspaceMenu'); const open = button.getAttribute('aria-expanded') === 'true'; button.setAttribute('aria-expanded', String(!open)); menu.hidden = open })
-$$('[data-workspace]').forEach((button) => button.addEventListener('click', () => { $('#workspaceLabel').textContent = button.dataset.workspace; $('#workspaceMenu').hidden = true; $('#workspaceSwitcher').setAttribute('aria-expanded', 'false'); showToast(`已绑定工作区「${button.dataset.workspace}」`) }))
+$('#workspaceImportButton').addEventListener('click', () => { $('#workspaceMenu').hidden = true; $('#workspaceSwitcher').setAttribute('aria-expanded', 'false'); $('#workspaceFiles').click() })
+$('#workspaceFiles').addEventListener('change', (event) => {
+  const files = event.target.files
+  void importSelectedWorkspace(files).then(() => showToast('工作区导入完成')).catch((error) => showToast(`导入失败：${errorText(error)}`)).finally(() => { event.target.value = '' })
+})
 $('#newSession').addEventListener('click', () => showToast('已准备新会话入口'))
 
+updateConnectionStatus()
 bindResizableLayout()
 renderRoute('workbench')
+void loadWorkspaces()

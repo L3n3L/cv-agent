@@ -16,8 +16,9 @@
           <span class="workspace-copy"><small>当前工作区</small><b id="workspaceLabel">林能隆 · AI 产品经理校招</b></span><span class="chevron" aria-hidden="true">⌄</span>
         </button>
         <div class="workspace-menu" id="workspaceMenu" hidden>
-          <button type="button" data-workspace="林能隆 · AI 产品经理校招">林能隆 · AI 产品经理校招<small>resume.md · 3 个投递版本</small></button>
-          <button type="button" data-workspace="游戏系统策划 · 投递工作区">游戏系统策划 · 投递工作区<small>resume.md · 1 个投递版本</small></button>
+          <div id="workspaceOptions"><small>正在读取工作区…</small></div>
+          <button type="button" id="workspaceImportButton">选择简历工作区<small>从本地目录导入 Markdown、模板和素材</small></button>
+          <input id="workspaceFiles" type="file" webkitdirectory directory multiple hidden />
         </div>
         <nav class="primary-nav" aria-label="简历制作模块">
           <p class="nav-caption">简历制作</p>
@@ -33,7 +34,7 @@
           <button class="session-item" data-session="product" type="button"><span class="session-dot"></span><span><b>AI 产品经理定向版</b><small>已渲染 · 待确认</small></span></button>
           <button class="session-item" data-session="compress" type="button"><span class="session-dot"></span><span><b>压缩项目经历</b><small>已保存 · 3 天前</small></span></button>
         </section>
-        <div class="sidebar-foot"><div class="connection"><i></i>本地工作区已连接</div><button class="settings-button" type="button">设置</button></div>
+        <div class="sidebar-foot"><div class="connection"><i></i><span id="connectionStatus">等待选择工作区</span></div><button class="settings-button" type="button">设置</button></div>
       </aside>
       <div class="resize-handle resize-sidebar" data-resize="sidebar" role="separator" aria-orientation="vertical" aria-label="调整导航栏宽度" aria-valuemin="0" aria-valuemax="360" tabindex="0"></div>
       <main class="main-stage">
@@ -51,6 +52,7 @@
       </aside>
     </div>
     <div class="toast" id="toast" role="status"></div>
+    <script src="./api-client.js"></script>
     <script src="./client-events.js"></script>
     <script src="./app.js"></script>
   </body>

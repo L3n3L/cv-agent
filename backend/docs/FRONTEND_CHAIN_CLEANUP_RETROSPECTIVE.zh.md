@@ -52,3 +52,16 @@ demo v2 原先在多个页面硬编码 `./real-template?...`。新仓库不包�
 ## 5. 本轮结果与未完成项
 
 本轮消除插件预览路由造成的空白假象，并保留旧后端静态入口作为临时回退。当前尚未宣称“前后端已完全打通”；完成该结论必须满足真实 workspace 导入、session bootstrap、source 加载、agent 修改、save/render 和 preview 的端到端验收。
+
+## 6. 对接执行记录（2026-09-17）
+
+已完成：
+
+- 前端统一 API client，错误中保留后端 errorCode 和 requestId。
+- 目录文件导入到 `/api/workspaces/import`，前端只使用返回的 workspaceId。
+- workspace bootstrap、源简历加载和真实 session 预览。
+- 编辑器内容写入隔离 draft，并调用真实 render。
+- Agent 对话调用 `/api/agent/run`，请求失败时展示失败状态，不保留假成功响应。
+- iframe 加载后读取真实 A4 页面并调用 `/api/agent/measure`。
+
+浏览器冒烟已经验证导入、bootstrap、源文件显示、真实 A4、draft/render、Agent 失败态与成功态。开发机通过 `backend/.env` 配置 `DEEPSEEK_API_KEY` 后，最小真实请求已成功返回；该文件已被 Git 忽略，不进入提交。

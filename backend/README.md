@@ -14,7 +14,8 @@ CVAgent 是独立的 AI 简历生产产品。原有插件只作为可迁移能�
 - 目录选择、受管工作区导入和不透明 `workspaceId`；
 - 当前 Markdown 简历读取/摘要；
 - 不覆盖源文件的隔离草稿写入；
-- `POST /api/agent/run` 的独立 Agent 调用入口。
+- `POST /api/agent/run` 的独立 Agent 调用入口；
+- 测量阻断后的同会话 Agent 续跑入口 `POST /api/agent/continue`。
 
 ## 运行
 
@@ -28,6 +29,7 @@ npm start
 
 Agent 调用入口：`POST http://127.0.0.1:3180/api/agent/run`
 浏览器测量回传入口：`POST http://127.0.0.1:3180/api/agent/measure`
+测量未通过时继续当前 Agent：`POST http://127.0.0.1:3180/api/agent/continue`（必须携带当前 `sessionId` 和 `renderId`）
 当前渲染预览：`GET http://127.0.0.1:3180/api/agent/preview?sessionId=...`
 正式版本保存：`POST http://127.0.0.1:3180/api/agent/save`（必须明确传 `confirm: true`）
 历史会话（兼容旧调用）：`GET http://127.0.0.1:3180/api/sessions?workspaceRoot=...&resumePath=resume.md`

@@ -47,6 +47,30 @@ function assistantText(result) {
   return ''
 }
 
+async function runAgentTurn(session, message, options = {}) {
+  const taskRef = session.taskRef
+  const task = taskRef.current
+  const runLogger = options.serverLogger.child(contextFields(task.context))
+  const mode = options.mode || 'user_message'
+  session.runState = 'running'
+  session.status = task.state
+  session.lastError = null
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, ...contextFields(task.context) })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, resumePath: session.resumePath })
+  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+  const agent = await options.agentFactory({ tools, task, taskRef })
+  if (!agent || typeof agent.invoke !== 'function') throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
+  const result = await agent.invoke({ messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] })
+  if (Array.isArray(result?.messages)) session.messages = result.messages
+  const nextTask = taskRef.current
+  session.runState = 'idle'
+  session.status = nextTask.state
+  session.lastError = null
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, ...contextFields(nextTask.context) })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode })
+  return { result, task: nextTask }
+}
+
 async function loadSession(sessions, sessionStore, sessionId, serverLogger = null) {
   const safeId = String(sessionId || '').trim()
   if (!safeId) return null
@@ -165,6 +189,10 @@ export function createServer(options = {}) {
     }
     if (request.method === 'POST' && request.url === '/api/agent/run') {
       void handleAgentRun(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/agent/continue') {
+      void handleAgentContinue(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore })
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/measure') {
@@ -385,7 +413,7 @@ async function handleAgentBootstrap(request, response, options) {
     const rendered = await handlers.resumeRender()
     await runLogger.info('session_bootstrapped', { workspaceRoot: workspace.root, resumePath, templateId: template.id, renderId: rendered.renderId })
     const current = session.taskRef.current
-    sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, context: contextFields(current.context), draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content } })
+    sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, targetPages: current.targetPages, context: contextFields(current.context), draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content }, messages: options.sessionStore.summary(session, true).messages })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_BOOTSTRAP_FAILED'), errorMessage: String(error?.message || error) }
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'TEMPLATE_NOT_FOUND'])
@@ -490,6 +518,46 @@ async function handleMeasurement(request, response, options) {
   }
 }
 
+async function handleAgentContinue(request, response, options) {
+  let session = null
+  let task = null
+  try {
+    const body = await readJsonBody(request, 64 * 1024)
+    const sessionId = String(body.sessionId || '').trim()
+    const renderId = String(body.renderId || '').trim()
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw Object.assign(new Error('sessionId is invalid'), { code: 'SESSION_INVALID' })
+    if (!renderId) throw Object.assign(new Error('renderId is required'), { code: 'CONTINUATION_RENDER_REQUIRED' })
+    session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    return await withSessionLock(session, async () => {
+      task = session.taskRef.current
+      if (String(task.context.renderId || '') !== renderId) throw Object.assign(new Error('continuation renderId is stale'), { code: 'MEASUREMENT_STALE' })
+      if (task.state === 'accepted' || task.state === 'saved') {
+        sendJson(response, 200, { ok: true, continued: false, sessionId, assistantText: '', state: task.state, context: contextFields(task.context), blockers: task.blockers })
+        return
+      }
+      if (task.state !== 'needs_revision') throw Object.assign(new Error(`agent continuation requires needs_revision, received ${task.state}`), { code: 'CONTINUATION_NOT_ALLOWED' })
+      const blockers = task.blockers.length ? `\n当前阻断项：\n- ${task.blockers.join('\n- ')}` : ''
+      const message = String(body.message || `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据最终验收结果继续修订当前简历，重新检查、渲染，并等待下一次真实测量。${blockers}`).trim()
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'measurement_continuation' })
+      task = turn.task
+      sendJson(response, 200, { ok: true, continued: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
+    })
+  } catch (error) {
+    const details = { errorCode: String(error?.code || 'AGENT_CONTINUE_FAILED'), errorMessage: String(error?.message || error) }
+    if (session) {
+      session.runState = 'failed'
+      session.status = session.taskRef.current?.state || 'failed'
+      session.lastError = { code: details.errorCode, message: details.errorMessage }
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
+      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode }).catch(() => {})
+    }
+    await options.serverLogger.error('agent_continuation_failed', { ...(task ? contextFields(task.context) : {}), ...details })
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'SESSION_INVALID', 'CONTINUATION_RENDER_REQUIRED', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'CONTINUATION_NOT_ALLOWED', 'SOURCE_CHANGED'])
+    sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
+  }
+}
+
 async function handleAgentRun(request, response, options) {
   let task = null
   let session = null
@@ -516,26 +584,9 @@ async function handleAgentRun(request, response, options) {
       options.sessions.set(sessionId, session)
     }
     return await withSessionLock(session, async () => {
-      task = session.taskRef.current
-      const taskRef = session.taskRef
-      const runLogger = options.serverLogger.child(contextFields(task.context))
-      session.runState = 'running'
-      session.status = task.state
-      session.lastError = null
-      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, ...contextFields(task.context) })
-      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, resumePath })
-      const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
-      const agent = await options.agentFactory({ tools, task, taskRef })
-      if (!agent || typeof agent.invoke !== 'function') throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
-      const result = await agent.invoke({ messages: [...session.messages, { role: 'user', content: message }] })
-      if (Array.isArray(result?.messages)) session.messages = result.messages
-      task = taskRef.current
-      session.runState = 'idle'
-      session.status = task.state
-      session.lastError = null
-      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, ...contextFields(task.context) })
-      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...task, sessionId: session.sessionId }, { outcome: 'success', state: task.state, assistantChars: assistantText(result).length })
-      sendJson(response, 200, { ok: true, sessionId, assistantText: assistantText(result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: taskRef.renderRelativePath || null })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'user_message' })
+      task = turn.task
+      sendJson(response, 200, { ok: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
     })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_RUN_FAILED'), errorMessage: String(error?.message || error) }

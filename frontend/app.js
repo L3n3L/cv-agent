@@ -23,23 +23,33 @@ const liveState = {
   resumePath: 'resume.md',
   sourceContent: '',
   draftContent: '',
+  messages: [],
   templateId: 'campus-standard',
+  targetPages: 1,
   renderId: '',
   workflowState: 'intake',
   measurement: null,
+  measurementPending: false,
+  measuredRenderKey: '',
+  continuationKey: '',
   loading: false,
 }
 const api = window.cvAgentApi
+let measurementInFlightKey = ''
 
 function previewUrl() {
   return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
 }
 
-function measurePreviewFrame(frame) {
-  if (!liveState.sessionId || !liveState.renderId || frame.dataset.measureBound === 'true') return
-  frame.dataset.measureBound = 'true'
+function measurePreviewFrame(frame, identity = {}) {
+  const sessionId = identity.sessionId || liveState.sessionId
+  const renderId = identity.renderId || liveState.renderId
+  const key = `${sessionId}:${renderId}`
+  if (!sessionId || !renderId || frame.classList.contains('template-real-thumb') || frame.dataset.measureKey === key) return
+  frame.dataset.measureKey = key
   frame.addEventListener('load', () => {
-    if (!liveState.sessionId || !liveState.renderId || frame.classList.contains('template-real-thumb')) return
+    if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
+    if (liveState.measuredRenderKey === key || measurementInFlightKey === key) return
     const documentRoot = frame.contentDocument?.documentElement
     const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
     if (!documentRoot || !pages.length) return
@@ -51,13 +61,24 @@ function measurePreviewFrame(frame) {
     })
     const pageCount = Number(documentRoot.dataset.pageCount || pages.length)
     const overflow = documentRoot.dataset.pageOverflow === 'true' || pages.some((page) => page.scrollHeight > page.clientHeight + 1)
-    void api.post('/api/agent/measure', { sessionId: liveState.sessionId, renderId: liveState.renderId, pageCount, occupancy, overflow })
+    measurementInFlightKey = key
+    liveState.measurementPending = true
+    void api.post('/api/agent/measure', { sessionId, renderId, pageCount, occupancy, overflow })
       .then(({ body }) => {
+        liveState.measuredRenderKey = key
         liveState.measurement = body.measurement || null
         liveState.workflowState = body.state || liveState.workflowState
         updateHeader()
+        if (body.state === 'needs_revision' && liveState.continuationKey !== key) {
+          liveState.continuationKey = key
+          void continueAgentAfterMeasurement(key, body.verification?.blockers || [])
+        }
       })
       .catch((error) => showToast(`预览测量失败：${errorText(error)}`))
+      .finally(() => {
+        if (measurementInFlightKey === key) measurementInFlightKey = ''
+        liveState.measurementPending = false
+      })
   })
 }
 
@@ -65,8 +86,13 @@ function syncPreviewFrames() {
   const src = previewUrl()
   $$('.direct-preview-stage iframe, .full-real-frame, .template-real-thumb').forEach((frame) => {
     if (src) {
-      frame.src = src
-      measurePreviewFrame(frame)
+      const identity = { sessionId: liveState.sessionId, renderId: liveState.renderId }
+      measurePreviewFrame(frame, identity)
+      const previewKey = `${identity.sessionId}:${identity.renderId}`
+      if (frame.dataset.previewKey !== previewKey) {
+        frame.dataset.previewKey = previewKey
+        frame.src = src
+      }
       return
     }
     const empty = document.createElement('div')
@@ -75,6 +101,28 @@ function syncPreviewFrames() {
     empty.textContent = '选择工作区后显示真实预览'
     frame.replaceWith(empty)
   })
+}
+
+async function continueAgentAfterMeasurement(renderKey, blockers) {
+  const [sessionId, renderId] = renderKey.split(':')
+  if (!sessionId || !renderId || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
+  showToast('排版未通过，Agent 正在继续调整…')
+  try {
+    const { body } = await api.post('/api/agent/continue', { sessionId, renderId, message: `真实 A4 测量已回传，当前验收未通过。请继续处理当前草稿，不能假设指标已经通过；根据这些阻断项调整内容或版式，重新检查并重新渲染。${blockers.length ? `\n阻断项：\n- ${blockers.join('\n- ')}` : ''}` })
+    if (liveState.sessionId !== sessionId) return
+    liveState.workflowState = body.state || liveState.workflowState
+    liveState.renderId = body.context?.renderId || liveState.renderId
+    liveState.measuredRenderKey = ''
+    liveState.continuationKey = ''
+    syncPreviewFrames()
+    updateHeader()
+    const assistantMessage = body.assistantText || 'Agent 已根据真实排版结果继续处理。'
+    liveState.messages.push({ role: 'assistant', content: assistantMessage })
+    appendAgentResponse(assistantMessage)
+  } catch (error) {
+    liveState.continuationKey = ''
+    showToast(`Agent 续跑失败：${errorText(error)}`)
+  }
 }
 
 function currentSessionData() {
@@ -147,8 +195,13 @@ async function bootstrapWorkspace(workspace) {
     liveState.resumePath = body.source?.path || liveState.resumePath
     liveState.sourceContent = body.source?.content || ''
     liveState.draftContent = liveState.sourceContent
+    liveState.messages = Array.isArray(body.messages) ? body.messages : []
+    liveState.targetPages = body.targetPages || liveState.targetPages
     liveState.renderId = body.context?.renderId || ''
     liveState.workflowState = body.state || 'drafting'
+    liveState.measurement = null
+    liveState.measuredRenderKey = ''
+    liveState.continuationKey = ''
     activeSessionId = liveState.sessionId
     sessions[currentSession] = { title: liveState.workspace.name, status: liveState.workflowState, meta: `${liveState.resumePath} · ${liveState.templateId} · A4` }
     updateConnectionStatus()
@@ -337,6 +390,23 @@ function updateSessionStatus(status) {
   $('#routeStatus').textContent = status
 }
 
+function previewStatusText() {
+  const target = liveState.targetPages || 1
+  const measured = liveState.measurement
+  if (measured) return `${liveState.workflowState === 'accepted' ? '验收通过' : '需要调整'} · ${measured.pageCount} 页 / 目标 ${target} 页`
+  return liveState.renderId ? '草稿 · 待测量' : '等待渲染'
+}
+
+function updatePreviewStatus() {
+  const status = previewStatusText()
+  const direct = $('[data-preview-status]')
+  const foot = $('[data-preview-foot-status]')
+  const full = $('[data-full-preview-status]')
+  if (direct) direct.textContent = status
+  if (foot) foot.textContent = liveState.measurement ? '已完成真实 A4 测量' : liveState.renderId ? '等待真实 A4 测量' : '等待渲染'
+  if (full) full.textContent = `${liveState.renderId ? '当前 render' : '暂无 render'} · ${status}`
+}
+
 function updateHeader() {
   const data = currentSessionData()
   const copy = routeCopy[currentRoute]
@@ -346,6 +416,13 @@ function updateHeader() {
   $('#routeStatus').textContent = currentRoute === 'workbench' ? data.status : routeStatus[currentRoute]
   $('#routeStatus').classList.toggle('neutral-status', Boolean(routeStatus[currentRoute] && currentRoute !== 'checks'))
   $('#routeMeta').textContent = currentRoute === 'templates' || currentRoute === 'versions' ? (liveState.workspace ? `${liveState.workspace.name} · 当前工作区` : '请先选择工作区') : data.meta
+  const saveButton = $('#saveVersionButton')
+  if (saveButton) {
+    const canSave = liveState.workflowState === 'accepted'
+    saveButton.disabled = !canSave
+    saveButton.title = canSave ? '保存当前已通过真实 A4 验收的正式版本' : '真实 A4 验收通过后才能保存正式版本'
+  }
+  updatePreviewStatus()
 }
 
 function setPreviewOpen(open) {
@@ -368,8 +445,21 @@ function renderChat() {
   return `<div class="chat-layout"><div class="chat-stream"><div class="timeline-label">今天 · 10:24</div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:24</span></div><div class="message-bubble">已载入当前简历和校招标准。可以修改内容、版式或生成投递版。</div></div></article><article class="message user-message"><div class="avatar">L</div><div class="message-body"><div class="message-author">你 <span>10:25</span></div><div class="message-bubble">把实习经历改成更偏 AI 产品经理的投递版，并尽量压到一页。</div></div></article><div class="run-card" aria-label="检查结果"><div class="run-label"><b>检查结果</b><span>10:25</span></div><div><i class="run-dot done">✓</i><b>已读取简历与模板</b></div><div><i class="run-dot done">✓</i><b>内容检查完成</b></div><div class="blocked"><i class="run-dot">3</i><b>排版验收未通过</b><span>2 页 / 目标 1 页</span></div></div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:26</span></div><div class="message-bubble">当前有 3 个排版阻断项。先压缩项目经历，再重新渲染。</div><div class="message-actions"><button type="button" data-suggest="先压缩项目经历，再重新渲染">采纳建议</button><button type="button" data-open-preview>打开预览</button></div></div></article></div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
 }
 
+function chatMessageText(message) {
+  if (typeof message?.content === 'string') return message.content
+  if (Array.isArray(message?.content)) return message.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
+  return ''
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character])
+}
+
 function renderChatRefined() {
-  return `<div class="chat-layout"><div class="chat-stream"><section class="turn turn-completed" aria-label="今天的对话"><div class="timeline-label">今天 · 10:24</div><article class="message agent-message" aria-label="Agent 消息"><div class="message-body"><div class="message-bubble">已载入当前简历和校招标准。可以修改内容、版式或生成投递版。</div></div></article><article class="message user-message" aria-label="用户消息"><div class="message-body"><div class="message-bubble">把实习经历改成更偏 AI 产品经理的投递版，并尽量压到一页。</div></div></article><section class="run-card tool-group" aria-label="本轮处理过程"><div class="run-label"><b>已处理 12 秒</b><span>10:25</span></div><details class="tool-row"><summary><i class="tool-state done" aria-hidden="true"></i><span>读取简历与模板</span><time>已完成</time></summary><div class="tool-detail">已载入 resume.md 和校招标准。</div></details><details class="tool-row"><summary><i class="tool-state done" aria-hidden="true"></i><span>检查页面密度</span><time>已完成</time></summary><div class="tool-detail">当前 2 页，目标 1 页。</div></details><details class="tool-row"><summary><i class="tool-state blocked" aria-hidden="true"></i><span>排版验收未通过</span><time>2 页 / 目标 1 页</time></summary><div class="tool-detail">项目经历和技能描述需要进一步压缩。</div></details></section><article class="message agent-message" aria-label="Agent 消息"><div class="message-body"><div class="message-bubble">当前有 3 个排版阻断项。请在工作台中压缩项目经历，再重新渲染确认成品。</div></div></article></section></div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
+  const visibleMessages = (Array.isArray(liveState.messages) ? liveState.messages : []).filter((message) => ['user', 'assistant'].includes(message?.role)).map((message) => ({ role: message.role, content: chatMessageText(message) })).filter((message) => message.content)
+  const messages = visibleMessages.map((message) => `<article class="message ${message.role === 'user' ? 'user-message' : 'agent-message'}" aria-label="${message.role === 'user' ? '用户消息' : 'Agent 消息'}"><div class="message-body"><div class="message-bubble">${escapeHtml(message.content)}</div></div></article>`).join('')
+  const empty = visibleMessages.length ? '' : '<div class="chat-empty">描述你希望如何修改当前简历，Agent 会先读取当前草稿，再执行检查、渲染和真实 A4 验收。</div>'
+  return `<div class="chat-layout"><div class="chat-stream">${empty}${messages}</div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
 }
 
 function renderEditorLegacy() {
@@ -420,6 +510,9 @@ async function saveDraftAndRender(content) {
     const renderResponse = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
     liveState.renderId = renderResponse.body.context?.renderId || liveState.renderId
     liveState.workflowState = renderResponse.body.state || liveState.workflowState
+    liveState.measurement = null
+    liveState.measuredRenderKey = ''
+    liveState.continuationKey = ''
     syncPreviewFrames()
     updateHeader()
     $('#editorState').textContent = '已渲染 · 待测量'
@@ -433,7 +526,7 @@ async function saveDraftAndRender(content) {
 }
 
 function renderWorkbench() {
-  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span>草稿 · 2 页 / 目标 1 页</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> 实时渲染</span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
+  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
   syncPreviewFrames()
   applyLayoutPrefs()
   if (liveState.sourceContent) $('#resumeEditor').value = liveState.draftContent || liveState.sourceContent
@@ -444,7 +537,7 @@ function renderWorkbench() {
 }
 
 function renderPreview() {
-  $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> 当前 render · 待测量</span><button class="primary-small" type="button">重新渲染</button></div></div>`
+  $('#routeView').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> <span data-full-preview-status>等待渲染</span></span><button class="primary-small" type="button">重新渲染</button></div></div>`
   syncPreviewFrames()
 }
 
@@ -466,6 +559,48 @@ function renderVersions() {
   $('#routeView').innerHTML = `<div class="versions-page"><div class="page-toolbar"><button class="primary-small" type="button" disabled title="当前简历未通过验收">创建正式版本</button></div><div class="version-list"><article class="version-row current"><div class="version-mark">D</div><div class="version-copy"><b>当前草稿</b><span>校招一页版 · 草稿 · 需要重新验收</span><small>最后修改：刚刚 · 未固化</small></div><em>不可导出</em><button class="secondary-button" type="button">继续调整</button></article><article class="version-row"><div class="version-mark saved">01</div><div class="version-copy"><b>上一版校招简历</b><span>校招一页版 · 正式版本</span><small>保存于 2026-09-14 · A4 · 1 页</small></div><em class="saved-label">已保存</em><button class="secondary-button" type="button">打开</button></article><article class="version-row"><div class="version-mark saved">02</div><div class="version-copy"><b>AI 产品经理定向版</b><span>针对产品岗位的投递版本</span><small>保存于 2026-09-12 · A4 · 1 页</small></div><em class="saved-label">已保存</em><button class="secondary-button" type="button">打开</button></article></div></div>`
 }
 
+function appendAgentResponse(text) {
+  const stream = $('.chat-stream')
+  if (!stream) return
+  const response = document.createElement('article')
+  response.className = 'message agent-message'
+  response.setAttribute('aria-label', 'Agent 消息')
+  response.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
+  response.querySelector('.message-bubble').textContent = text
+  stream.append(response)
+  response.scrollIntoView({ behavior: 'smooth', block: 'end' })
+}
+
+async function saveCurrentVersion() {
+  if (!liveState.sessionId) {
+    showToast('请先选择工作区并加载简历')
+    return
+  }
+  if (liveState.workflowState !== 'accepted') {
+    showToast('真实排版验收通过后才能保存正式版本')
+    return
+  }
+  const name = window.prompt('正式版本名称', currentSessionData().title || '简历正式版')
+  if (name === null) return
+  const trimmedName = name.trim()
+  if (!trimmedName) {
+    showToast('版本名称不能为空')
+    return
+  }
+  const button = $('#saveVersionButton')
+  if (button) button.disabled = true
+  try {
+    const { body } = await api.post('/api/agent/save', { sessionId: liveState.sessionId, name: trimmedName, confirm: true })
+    liveState.workflowState = body.state || 'saved'
+    updateHeader()
+    showToast(`正式版本「${body.version?.name || trimmedName}」已保存`)
+  } catch (error) {
+    showToast(`保存正式版本失败：${errorText(error)}`)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
 function bindChat() {
   $('#composer').addEventListener('submit', (event) => {
     event.preventDefault()
@@ -482,6 +617,7 @@ function bindChat() {
     article.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
     article.querySelector('.message-bubble').textContent = value
     const stream = $('.chat-stream')
+    liveState.messages.push({ role: 'user', content: value })
     stream.append(article)
     input.value = ''
     article.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -496,17 +632,19 @@ function bindChat() {
     void api.post('/api/agent/run', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
       .then(({ body }) => {
         liveState.workflowState = body.state || liveState.workflowState
+        const previousRenderId = liveState.renderId
         liveState.renderId = body.context?.renderId || liveState.renderId
+        if (liveState.renderId !== previousRenderId) {
+          liveState.measurement = null
+          liveState.measuredRenderKey = ''
+          liveState.continuationKey = ''
+        }
         if (body.draft?.contentVersion) liveState.draftContent = $('#resumeEditor')?.value || liveState.draftContent
         progress.classList.remove('is-running')
         progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 已完成本轮处理</span><time>完成</time>'
-        const response = document.createElement('article')
-        response.className = 'message agent-message'
-        response.setAttribute('aria-label', 'Agent 消息')
-        response.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
-        response.querySelector('.message-bubble').textContent = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
-        stream.append(response)
-        response.scrollIntoView({ behavior: 'smooth', block: 'end' })
+        const assistantMessage = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
+        liveState.messages.push({ role: 'assistant', content: assistantMessage })
+        appendAgentResponse(assistantMessage)
         syncPreviewFrames()
         updateHeader()
       })
@@ -522,7 +660,7 @@ function renderRoute(route) {
   currentRoute = route
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.route === route))
   if (route !== 'workbench') setPreviewOpen(false)
-  if (route === 'workbench') { $('#routeActions').innerHTML = '<button class="ghost-button" id="workbenchAssistantButton" type="button">打开 Agent</button>'; renderWorkbench() }
+  if (route === 'workbench') { $('#routeActions').innerHTML = '<button class="ghost-button" id="saveVersionButton" type="button" disabled>保存正式版</button><button class="ghost-button" id="workbenchAssistantButton" type="button">打开 Agent</button>'; renderWorkbench() }
   if (route === 'preview') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">导出预览</button>'; renderPreview() }
   if (route === 'templates') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">导入模板</button>'; renderTemplates() }
   if (route === 'checks') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">重新检查</button>'; renderChecks() }
@@ -530,6 +668,8 @@ function renderRoute(route) {
   updateHeader()
   const assistantButton = $('#workbenchAssistantButton')
   if (assistantButton) assistantButton.addEventListener('click', () => setPreviewOpen(!previewOpen))
+  const saveButton = $('#saveVersionButton')
+  if (saveButton) saveButton.addEventListener('click', () => { void saveCurrentVersion() })
 }
 
 $$('.nav-item').forEach((item) => item.addEventListener('click', () => renderRoute(item.dataset.route)))

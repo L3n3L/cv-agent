@@ -1,11 +1,6 @@
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 
-const sessions = {
-  campus: { title: '校招一页版', status: '草稿 · 3 个阻断项', meta: 'resume.md · 校招标准 · A4' },
-  product: { title: 'AI 产品经理定向版', status: '已渲染 · 待确认', meta: '林能隆 · AI 产品经理校招 · resume.md' },
-  compress: { title: '压缩项目经历', status: '已保存 · 3 天前', meta: '林能隆 · AI 产品经理校招 · resume.md' },
-}
 const routeCopy = {
   workbench: { kicker: '简历工作台', title: '' },
   preview: { kicker: '成品', title: '预览' },
@@ -14,7 +9,6 @@ const routeCopy = {
   versions: { kicker: '工作区成果', title: '投递版本' },
 }
 let currentRoute = 'workbench'
-let currentSession = 'campus'
 let activeSessionId = ''
 const liveState = {
   workspaceId: '',
@@ -25,9 +19,13 @@ const liveState = {
   draftContent: '',
   messages: [],
   templateId: 'campus-standard',
+  templateName: '校招标准',
+  templates: [],
+  presentation: null,
   targetPages: 1,
   renderId: '',
   workflowState: 'intake',
+  blockerCount: 0,
   measurement: null,
   measurementPending: false,
   measuredRenderKey: '',
@@ -36,9 +34,59 @@ const liveState = {
 }
 const api = window.cvAgentApi
 let measurementInFlightKey = ''
+let workflowEventSource = null
+let workflowEventSessionId = ''
 
 function previewUrl() {
   return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
+}
+
+function templatePreviewUrl(templateId) {
+  if (!activeSessionId || !templateId) return ''
+  return `/api/template-preview?sessionId=${encodeURIComponent(activeSessionId)}&templateId=${encodeURIComponent(templateId)}&t=${encodeURIComponent(liveState.renderId || 'draft')}`
+}
+
+const toolLabels = {
+  workspace_info: '读取工作区',
+  resume_prepare: '准备简历任务',
+  resume_read: '读取简历',
+  resume_check: '检查内容',
+  template_list: '读取模板库',
+  template_select: '切换模板',
+  presentation_update: '调整版式',
+  resume_write: '写入隔离草稿',
+  resume_render: '重新渲染',
+  resume_metrics: '接收 A4 测量',
+  resume_finalize: '完成验收',
+}
+
+function connectWorkflowEvents() {
+  if (!liveState.sessionId || typeof window.EventSource !== 'function') return
+  if (workflowEventSessionId === liveState.sessionId && workflowEventSource) return
+  workflowEventSource?.close()
+  workflowEventSessionId = liveState.sessionId
+  workflowEventSource = new EventSource(`/api/agent/events?sessionId=${encodeURIComponent(liveState.sessionId)}`)
+  workflowEventSource.addEventListener('workflow', (event) => {
+    let payload
+    try { payload = JSON.parse(event.data) } catch { return }
+    const progress = $('.turn-progress.is-running')
+    if (!progress || payload.sessionId !== liveState.sessionId) return
+    const label = toolLabels[payload.toolName] || payload.toolName || 'Agent 处理'
+    const copy = progress.querySelector('span')
+    const timing = progress.querySelector('time')
+    if (payload.event === 'tool_call_started') {
+      if (copy) copy.textContent = label
+      if (timing) timing.textContent = '进行中'
+    } else if (payload.event === 'tool_call_succeeded') {
+      if (copy) copy.textContent = `${label}已完成`
+      if (timing) timing.textContent = '完成'
+    } else if (payload.event === 'tool_call_failed') {
+      if (copy) copy.textContent = `${label}失败`
+      if (timing) timing.textContent = '失败'
+    } else if (payload.event === 'agent_run_started') {
+      if (copy) copy.textContent = 'Agent 正在处理'
+    }
+  })
 }
 
 function measurePreviewFrame(frame, identity = {}) {
@@ -68,6 +116,7 @@ function measurePreviewFrame(frame, identity = {}) {
         liveState.measuredRenderKey = key
         liveState.measurement = body.measurement || null
         liveState.workflowState = body.state || liveState.workflowState
+        liveState.blockerCount = body.verification?.blockers?.length || 0
         updateHeader()
         if (body.state === 'needs_revision' && liveState.continuationKey !== key) {
           liveState.continuationKey = key
@@ -84,7 +133,7 @@ function measurePreviewFrame(frame, identity = {}) {
 
 function syncPreviewFrames() {
   const src = previewUrl()
-  $$('.direct-preview-stage iframe, .full-real-frame, .template-real-thumb').forEach((frame) => {
+  $$('.direct-preview-stage iframe, .full-real-frame').forEach((frame) => {
     if (src) {
       const identity = { sessionId: liveState.sessionId, renderId: liveState.renderId }
       measurePreviewFrame(frame, identity)
@@ -100,6 +149,22 @@ function syncPreviewFrames() {
     empty.setAttribute('role', 'status')
     empty.textContent = '选择工作区后显示真实预览'
     frame.replaceWith(empty)
+  })
+  syncTemplatePreviewFrames()
+}
+
+function syncTemplatePreviewFrames() {
+  $$('.template-real-thumb').forEach((frame) => {
+    const src = templatePreviewUrl(frame.dataset.templateId)
+    if (!src) {
+      frame.removeAttribute('src')
+      frame.dataset.previewKey = ''
+      return
+    }
+    const previewKey = `${liveState.sessionId}:${frame.dataset.templateId}:${liveState.renderId || 'draft'}`
+    if (frame.dataset.previewKey === previewKey) return
+    frame.dataset.previewKey = previewKey
+    frame.src = src
   })
 }
 
@@ -126,11 +191,11 @@ async function continueAgentAfterMeasurement(renderKey, blockers) {
 }
 
 function currentSessionData() {
-  if (!liveState.workspace) return sessions[currentSession]
+  if (!liveState.workspace) return { title: '选择工作区', status: '等待连接', meta: '选择工作区后加载 resume.md' }
   return {
     title: liveState.workspace.name || '未命名工作区',
     status: liveState.workflowState || '已连接',
-    meta: `${liveState.resumePath} · ${liveState.templateId} · A4`,
+    meta: `${liveState.resumePath} · ${liveState.templateName || liveState.templateId} · A4`,
   }
 }
 
@@ -178,6 +243,102 @@ function renderWorkspaceOptions(workspaces) {
   }
 }
 
+function sessionStateText(session) {
+  const task = session?.taskRef?.current
+  const state = task?.state || session?.status || 'idle'
+  const measurement = task?.measurements
+  if (state === 'accepted') return `验收通过 · ${measurement?.pageCount || 1} 页`
+  if (state === 'saved') return '已保存 · 正式版本'
+  if (state === 'needs_revision') return `需要调整 · ${task?.blockers?.length || 0} 项`
+  if (state === 'rendered') return '已渲染 · 待测量'
+  return state === 'drafting' ? '草稿 · 待渲染' : state
+}
+
+function sessionTitle(session) {
+  if (session?.sessionId === liveState.sessionId) return '当前会话'
+  const resumeName = String(session?.resumePath || session?.resumeId || '简历').split(/[\\/]/).pop()
+  const updatedAt = session?.updatedAt ? new Date(session.updatedAt) : null
+  const date = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) : '历史'
+  return `${resumeName} · ${date}`
+}
+
+function renderSessionList(records = []) {
+  const container = $('#sessionList')
+  if (!container) return
+  container.replaceChildren()
+  if (!records.length) {
+    const empty = document.createElement('small')
+    empty.className = 'session-empty'
+    empty.textContent = '当前工作区暂无历史会话'
+    container.append(empty)
+    return
+  }
+  for (const session of records) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `session-item${session.sessionId === liveState.sessionId ? ' active' : ''}`
+    button.dataset.sessionId = session.sessionId
+    const dot = document.createElement('span')
+    dot.className = 'session-dot'
+    const copy = document.createElement('span')
+    const title = document.createElement('b')
+    title.textContent = session.title || sessionTitle(session)
+    const status = document.createElement('small')
+    status.textContent = sessionStateText(session)
+    copy.append(title, status)
+    button.append(dot, copy)
+    button.addEventListener('click', () => { void restoreSession(session.sessionId) })
+    container.append(button)
+  }
+}
+
+async function loadSessionsForWorkspace() {
+  if (!liveState.workspaceId) {
+    renderSessionList([])
+    return
+  }
+  try {
+    const { body } = await api.get(`/api/sessions?workspaceId=${encodeURIComponent(liveState.workspaceId)}`)
+    renderSessionList(Array.isArray(body.sessions) ? body.sessions : [])
+  } catch (error) {
+    renderSessionList([])
+    showToast(`读取会话失败：${errorText(error)}`)
+  }
+}
+
+async function restoreSession(sessionId) {
+  if (!sessionId) return
+  try {
+    const { body } = await api.get(`/api/session?sessionId=${encodeURIComponent(sessionId)}`)
+    const session = body.session || {}
+    liveState.workspace = body.workspace || liveState.workspace
+    liveState.workspaceId = liveState.workspace?.id || session.workspaceId || liveState.workspaceId
+    liveState.sessionId = session.sessionId || sessionId
+    activeSessionId = liveState.sessionId
+    liveState.resumePath = body.source?.path || session.resumePath || liveState.resumePath
+    liveState.sourceContent = body.source?.content || liveState.sourceContent
+    liveState.draftContent = body.draft?.content || liveState.sourceContent
+    liveState.messages = Array.isArray(session.messages) ? session.messages : []
+    liveState.presentation = body.presentation || null
+    liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
+    liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
+    liveState.targetPages = session.taskRef?.current?.targetPages || liveState.targetPages
+    liveState.renderId = body.context?.renderId || ''
+    liveState.workflowState = body.state || session.status || 'idle'
+    liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
+    liveState.measurement = session.taskRef?.current?.measurements || null
+    liveState.measuredRenderKey = liveState.measurement && liveState.renderId ? `${liveState.sessionId}:${liveState.renderId}` : ''
+    liveState.continuationKey = ''
+    updateConnectionStatus()
+    renderSessionList([session])
+    renderRoute(currentRoute)
+    showToast(`已恢复「${liveState.templateName}」会话`)
+    await loadSessionsForWorkspace()
+  } catch (error) {
+    showToast(`会话恢复失败：${errorText(error)}`)
+  }
+}
+
 async function bootstrapWorkspace(workspace) {
   if (!workspace?.id) return
   liveState.loading = true
@@ -196,14 +357,18 @@ async function bootstrapWorkspace(workspace) {
     liveState.sourceContent = body.source?.content || ''
     liveState.draftContent = liveState.sourceContent
     liveState.messages = Array.isArray(body.messages) ? body.messages : []
+    liveState.presentation = body.presentation || null
+    liveState.templateId = body.context?.templateId || liveState.templateId
+    liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateName
     liveState.targetPages = body.targetPages || liveState.targetPages
     liveState.renderId = body.context?.renderId || ''
     liveState.workflowState = body.state || 'drafting'
+    liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
     liveState.continuationKey = ''
     activeSessionId = liveState.sessionId
-    sessions[currentSession] = { title: liveState.workspace.name, status: liveState.workflowState, meta: `${liveState.resumePath} · ${liveState.templateId} · A4` }
+    await loadSessionsForWorkspace()
     updateConnectionStatus()
     renderRoute('workbench')
     showToast('工作区已连接，简历草稿和预览已加载')
@@ -250,7 +415,12 @@ async function loadWorkspaces() {
     const { body } = await api.get('/api/workspaces')
     const workspaces = Array.isArray(body.workspaces) ? body.workspaces : []
     renderWorkspaceOptions(workspaces)
-    if (workspaces[0]) await bootstrapWorkspace(workspaces[0])
+    if (workspaces[0]) {
+      const sessionsResponse = await api.get(`/api/sessions?workspaceId=${encodeURIComponent(workspaces[0].id)}`)
+      const recentSession = Array.isArray(sessionsResponse.body.sessions) ? sessionsResponse.body.sessions[0] : null
+      if (recentSession?.sessionId) await restoreSession(recentSession.sessionId)
+      else await bootstrapWorkspace(workspaces[0])
+    }
   } catch (error) {
     renderWorkspaceOptions([])
     showToast(`读取工作区失败：${errorText(error)}`)
@@ -416,7 +586,16 @@ function updateHeader() {
   $('#routeStatus').textContent = currentRoute === 'workbench' ? data.status : routeStatus[currentRoute]
   $('#routeStatus').classList.toggle('neutral-status', Boolean(routeStatus[currentRoute] && currentRoute !== 'checks'))
   $('#routeMeta').textContent = currentRoute === 'templates' || currentRoute === 'versions' ? (liveState.workspace ? `${liveState.workspace.name} · 当前工作区` : '请先选择工作区') : data.meta
-  const saveButton = $('#saveVersionButton')
+  const templateName = $('[data-template-name]')
+  if (templateName) templateName.textContent = liveState.templateName || liveState.templateId
+  const assistantContext = $('.assistant-context span')
+  if (assistantContext) assistantContext.textContent = liveState.workspace ? `${data.title} · 当前草稿` : '选择工作区后开始对话'
+  const checksBadge = $('#checksBadge')
+  if (checksBadge) {
+    checksBadge.textContent = liveState.blockerCount ? String(liveState.blockerCount) : ''
+    checksBadge.hidden = !liveState.blockerCount
+  }
+  const saveButton = $('#saveVersionButton, #createVersionButton')
   if (saveButton) {
     const canSave = liveState.workflowState === 'accepted'
     saveButton.disabled = !canSave
@@ -437,14 +616,6 @@ function setPreviewOpen(open) {
   if (button) button.textContent = visible ? '收起 Agent' : '打开 Agent'
 }
 
-function renderChatLegacy() {
-  return `<div class="chat-layout"><div class="chat-stream"><div class="timeline-label">今天 · 10:24</div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:24</span></div><div class="message-bubble">我已读取当前简历和模板。你可以让我修改内容、调整版式，或针对一个岗位生成投递版。</div></div></article><article class="message user-message"><div class="avatar">L</div><div class="message-body"><div class="message-author">你 <span>10:25</span></div><div class="message-bubble">把实习经历改成更偏 AI 产品经理的投递版，并尽量压到一页。</div></div></article><div class="run-card"><div><i class="run-dot done">✓</i><b>已读取简历与模板</b><span>10:25</span></div><div><i class="run-dot done">✓</i><b>内容检查完成</b><span>10:25</span></div><div class="blocked"><i class="run-dot">3</i><b>排版验收未通过</b><span>2 页 / 目标 1 页</span></div></div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:26</span></div><div class="message-bubble">当前有 3 个排版阻断项。建议先压缩项目经历，再重新渲染；右上角可以打开预览和手动调整。</div><div class="message-actions"><button type="button" data-suggest="先压缩项目经历，再重新渲染">采纳建议</button><button type="button" data-open-preview>打开预览</button></div></div></article></div><form class="composer" id="composer"><textarea id="messageInput" rows="3" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span>当前会话草稿 · 修改后需要重新渲染</span><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
-}
-
-function renderChat() {
-  return `<div class="chat-layout"><div class="chat-stream"><div class="timeline-label">今天 · 10:24</div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:24</span></div><div class="message-bubble">已载入当前简历和校招标准。可以修改内容、版式或生成投递版。</div></div></article><article class="message user-message"><div class="avatar">L</div><div class="message-body"><div class="message-author">你 <span>10:25</span></div><div class="message-bubble">把实习经历改成更偏 AI 产品经理的投递版，并尽量压到一页。</div></div></article><div class="run-card" aria-label="检查结果"><div class="run-label"><b>检查结果</b><span>10:25</span></div><div><i class="run-dot done">✓</i><b>已读取简历与模板</b></div><div><i class="run-dot done">✓</i><b>内容检查完成</b></div><div class="blocked"><i class="run-dot">3</i><b>排版验收未通过</b><span>2 页 / 目标 1 页</span></div></div><article class="message agent-message"><div class="avatar">A</div><div class="message-body"><div class="message-author">CVAgent <span>10:26</span></div><div class="message-bubble">当前有 3 个排版阻断项。先压缩项目经历，再重新渲染。</div><div class="message-actions"><button type="button" data-suggest="先压缩项目经历，再重新渲染">采纳建议</button><button type="button" data-open-preview>打开预览</button></div></div></article></div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
-}
-
 function chatMessageText(message) {
   if (typeof message?.content === 'string') return message.content
   if (Array.isArray(message?.content)) return message.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
@@ -462,38 +633,9 @@ function renderChatRefined() {
   return `<div class="chat-layout"><div class="chat-stream">${empty}${messages}</div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
 }
 
-function renderEditorLegacy() {
-  return `<div class="editor-layout"><div class="editor-head"><div><b>Markdown 编辑器</b><span>修改只写入当前会话草稿，不覆盖源文件。</span></div><span id="editorState">未保存修改</span></div><textarea id="resumeEditor" spellcheck="false"># 林能隆
-
-AI 产品经理（2027 届校招）
-
-## 教育经历
-
-山东农业大学 · 信息学院 · 计算机科学与技术（本科）
-
-## 实习经历
-
-### 智联招聘 · AI 产品实习生
-
-- 将线上对话按场景筛选为基线，设计硬指标与软指标。
-- 独立实现提示词迭代工作台，支持变量注入、批量实验和版本管理。
-- 推动 Function Calling 迁移，降低提示词复杂度与输入成本。
-
-## 项目经历
-
-### HR Agent — AI 智能招聘分析工具
-
-- 设计上传、分析、报告、人才库闭环。
-- 负责五维人才画像、混合检索和结果呈现。</textarea><div class="editor-foot"><span>Markdown · 当前会话隔离草稿</span><button class="primary-small" id="editorApply" type="button">应用修改并重新渲染</button></div></div>`
-}
-
 function renderEditor() {
-  return renderEditorLegacy()
-    .replace('Markdown 编辑器', 'resume.md')
-    .replace('修改只写入当前会话草稿，不覆盖源文件。', '当前会话草稿')
-    .replace('未保存修改', '未保存')
-    .replace('Markdown · 当前会话隔离草稿', 'Markdown 草稿')
-    .replace('应用修改并重新渲染', '应用并重新渲染')
+  const content = liveState.draftContent || liveState.sourceContent || ''
+  return `<div class="editor-layout"><div class="editor-head"><div><b>${escapeHtml(liveState.resumePath || 'resume.md')}</b><span>当前会话草稿</span></div><span id="editorState">${content ? '未保存' : '等待工作区'}</span></div><textarea id="resumeEditor" spellcheck="false" placeholder="选择工作区后加载 resume.md">${escapeHtml(content)}</textarea><div class="editor-foot"><span>Markdown 草稿</span><button class="primary-small" id="editorApply" type="button">应用并重新渲染</button></div></div>`
 }
 
 async function saveDraftAndRender(content) {
@@ -507,9 +649,11 @@ async function saveDraftAndRender(content) {
     const draftResponse = await api.post('/api/agent/draft', { sessionId: liveState.sessionId, content })
     liveState.draftContent = content
     liveState.workflowState = draftResponse.body.state || 'drafting'
+    liveState.blockerCount = 0
     const renderResponse = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
     liveState.renderId = renderResponse.body.context?.renderId || liveState.renderId
     liveState.workflowState = renderResponse.body.state || liveState.workflowState
+    liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
     liveState.continuationKey = ''
@@ -525,15 +669,57 @@ async function saveDraftAndRender(content) {
   }
 }
 
+async function applyPresentationTuning() {
+  if (!liveState.sessionId) {
+    showToast('请先选择工作区并加载简历')
+    return
+  }
+  const values = {
+    fontSize: Number($('#tuningFontSize')?.value || 13),
+    lineHeight: Number($('#tuningLineHeight')?.value || 1.5),
+    sectionGap: Number($('#tuningSectionGap')?.value || 16),
+    pageMargin: Number($('#tuningPageMargin')?.value || 38),
+  }
+  const button = $('#applyTuning')
+  if (button) button.disabled = true
+  try {
+    const response = await api.post('/api/agent/presentation', { sessionId: liveState.sessionId, layout: values })
+    liveState.presentation = response.body.result?.presentation || liveState.presentation
+    const rendered = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
+    liveState.renderId = rendered.body.context?.renderId || liveState.renderId
+    liveState.workflowState = rendered.body.state || response.body.state || 'rendered'
+    liveState.blockerCount = 0
+    liveState.measurement = null
+    liveState.measuredRenderKey = ''
+    liveState.continuationKey = ''
+    syncPreviewFrames()
+    updateHeader()
+    const panel = $('#presentationPanel')
+    if (panel) panel.hidden = true
+    showToast('版式已更新，等待真实 A4 测量')
+  } catch (error) {
+    showToast(`版式更新失败：${errorText(error)}`)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
 function renderWorkbench() {
-  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b>校招标准</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div></section></div></div>`
+  $('#routeView').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b data-template-name>${escapeHtml(liveState.templateName || liveState.templateId)}</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span><button class="ghost-button" type="button" data-toggle-tuning>手动微调</button></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div><div class="presentation-panel" id="presentationPanel" hidden><div class="presentation-panel-head"><b>手动微调</b><button class="ghost-button" type="button" data-close-tuning>关闭</button></div><p>只修改当前会话的隔离版式，不覆盖源文件。</p><div class="tuning-grid"><label>字号<input id="tuningFontSize" type="number" min="11" max="18" step="0.5" value="13"></label><label>行高<input id="tuningLineHeight" type="number" min="1.2" max="2" step="0.05" value="1.5"></label><label>段落间距<input id="tuningSectionGap" type="number" min="6" max="30" step="1" value="16"></label><label>页边距<input id="tuningPageMargin" type="number" min="24" max="72" step="1" value="38"></label></div><button class="primary-small" id="applyTuning" type="button">应用并重新渲染</button></div></section></div></div>`
   syncPreviewFrames()
   applyLayoutPrefs()
   if (liveState.sourceContent) $('#resumeEditor').value = liveState.draftContent || liveState.sourceContent
+  const tuningLayout = liveState.presentation?.layout || {}
+  for (const [id, key] of [['tuningFontSize', 'fontSize'], ['tuningLineHeight', 'lineHeight'], ['tuningSectionGap', 'sectionGap'], ['tuningPageMargin', 'pageMargin']]) {
+    if (tuningLayout[key] !== undefined && $(`#${id}`)) $(`#${id}`).value = tuningLayout[key]
+  }
   $('#assistantContent').innerHTML = renderChatRefined()
   $('#editorApply').addEventListener('click', () => { void saveDraftAndRender($('#resumeEditor').value) })
   bindChat()
   $('[data-open-full-preview]').addEventListener('click', () => renderRoute('preview'))
+  $('[data-toggle-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = !$('#presentationPanel').hidden })
+  $('[data-close-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = true })
+  $('#applyTuning').addEventListener('click', () => { void applyPresentationTuning() })
 }
 
 function renderPreview() {
@@ -541,22 +727,200 @@ function renderPreview() {
   syncPreviewFrames()
 }
 
-function templateCard(id, name, revision, type, selected, tags) {
-  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}真实模板缩略图"><iframe class="template-real-thumb" title="${name}真实模板缩略图" src="about:blank" loading="lazy"></iframe></div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><small>${revision}</small><div class="tag-row">${tags.map((tag) => `<i>${tag}</i>`).join('')}</div><button class="secondary-button template-select" data-template="${id}" type="button">${selected ? '当前使用' : '选择模板'}</button></div></article>`
+function templateCard(template) {
+  const selected = template.id === liveState.templateId
+  const name = escapeHtml(template.name || template.id)
+  const id = escapeHtml(template.id)
+  const tags = (Array.isArray(template.tags) ? template.tags : []).slice(0, 4)
+  const thumb = activeSessionId
+    ? `<iframe class="template-real-thumb" data-template-id="${id}" title="${name}真实模板缩略图" loading="lazy"></iframe>`
+    : '<div class="template-thumb-empty">选择工作区后显示真实模板</div>'
+  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}模板预览">${thumb}</div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><small>${escapeHtml(template.id)} · 修订 ${Number(template.revision || 1)}</small><div class="tag-row">${tags.map((tag) => `<i>${escapeHtml(tag)}</i>`).join('')}</div><p class="template-description">${escapeHtml(template.description || '可用于当前简历的独立模板。')}</p><button class="secondary-button template-select" data-template="${id}" type="button" ${selected ? 'disabled' : ''}>${selected ? '当前使用' : '选择模板'}</button></div></article>`
 }
 
-function renderTemplates() {
-  $('#routeView').innerHTML = `<div class="templates-page"><div class="template-grid">${templateCard('campus-standard', '校招标准', '内置模板 · campus-standard', 'standard', true, ['单栏', '校招', '标准'])}${templateCard('business-ledger-plus', '商务履历增强', '内置模板 · business-ledger-plus', 'business', false, ['商务', '时间线', '社招'])}${templateCard('magazine-feature', '杂志开篇', '内置模板 · magazine-feature', 'editorial', false, ['运营', '杂志', '叙事'])}${templateCard('geek-lab', '极客实验室', '内置模板 · geek-lab', 'terminal', false, ['Geek', '暗黑', '模块化'])}${templateCard('case-study', '重点案例', '内置模板 · case-study', 'case', false, ['作品集', '重点内容', '产品'])}${templateCard('portrait-profile', '肖像侧栏', '内置模板 · portrait-profile', 'portrait', false, ['设计', '头像', '个人品牌'])}</div></div>`
-  syncPreviewFrames()
-  $$('.template-select').forEach((button) => button.addEventListener('click', () => { $$('.template-card').forEach((card) => { card.classList.toggle('selected', card === button.closest('.template-card')); card.querySelector('.template-name span').textContent = card === button.closest('.template-card') ? '当前使用' : '可选择' }); $$('.template-select').forEach((item) => { item.textContent = item === button ? '当前使用' : '选择模板' }); updateSessionStatus('模板已更新 · 待重新渲染'); showToast(`已选择「${button.closest('.template-card').querySelector('.template-name b').textContent}」`) }))
+function updateTemplateCards() {
+  $$('.template-card').forEach((card) => {
+    const selected = card.dataset.template === liveState.templateId
+    card.classList.toggle('selected', selected)
+    const label = card.querySelector('.template-name span')
+    const button = card.querySelector('.template-select')
+    if (label) label.textContent = selected ? '当前使用' : '可选择'
+    if (button) {
+      button.textContent = selected ? '当前使用' : '选择模板'
+      button.disabled = selected || liveState.loading
+    }
+  })
 }
 
-function renderChecks() {
-  $('#routeView').innerHTML = `<div class="checks-page"><div class="check-overview"><div><small>当前页数</small><strong>2 页</strong><span>目标 1 页</span></div><div><small>当前渲染</small><strong>待测量</strong><span>render · 2026.09</span></div><div><small>保存正式版</small><strong>不可用</strong><span>验收通过后开放</span></div></div><div class="blocker-list"><article class="blocker-item"><i>1</i><div><b>内容过多</b><p>项目经历和技能描述占用空间较大。</p><span>影响：第 2 页出现残留内容</span></div><button class="secondary-button" type="button">回到编辑</button></article><article class="blocker-item"><i>2</i><div><b>页面密度不均</b><p>第 2 页只有技能和荣誉内容。</p><span>影响：成品视觉不完整</span></div><button class="secondary-button" type="button">查看第 2 页</button></article><article class="blocker-item"><i>3</i><div><b>Section Gap 偏大</b><p>当前模板段落间距为 20px。</p><span>建议：先降低 Section Gap，再重新渲染</span></div><button class="primary-small" type="button">打开微调</button></article></div></div>`
+async function applyTemplate(template, button) {
+  if (!liveState.sessionId) {
+    showToast('请先选择工作区，模板预览不会写入任何简历')
+    return
+  }
+  if (!template?.id || template.id === liveState.templateId) return
+  if (button) button.disabled = true
+  liveState.loading = true
+  try {
+    const selection = await api.post('/api/agent/template', { sessionId: liveState.sessionId, templateId: template.id })
+    const rendered = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
+    liveState.templateId = selection.body.result?.templateId || template.id
+    liveState.templateName = template.name || liveState.templateId
+    liveState.renderId = rendered.body.context?.renderId || liveState.renderId
+    liveState.workflowState = rendered.body.state || selection.body.state || 'drafting'
+    liveState.blockerCount = 0
+    liveState.measurement = null
+    liveState.measuredRenderKey = ''
+    liveState.continuationKey = ''
+    updateTemplateCards()
+    syncPreviewFrames()
+    updateHeader()
+    showToast(`已应用「${liveState.templateName}」，正在等待真实 A4 测量`)
+  } catch (error) {
+    showToast(`模板应用失败：${errorText(error)}`)
+    updateTemplateCards()
+  } finally {
+    liveState.loading = false
+    updateTemplateCards()
+  }
 }
 
-function renderVersions() {
-  $('#routeView').innerHTML = `<div class="versions-page"><div class="page-toolbar"><button class="primary-small" type="button" disabled title="当前简历未通过验收">创建正式版本</button></div><div class="version-list"><article class="version-row current"><div class="version-mark">D</div><div class="version-copy"><b>当前草稿</b><span>校招一页版 · 草稿 · 需要重新验收</span><small>最后修改：刚刚 · 未固化</small></div><em>不可导出</em><button class="secondary-button" type="button">继续调整</button></article><article class="version-row"><div class="version-mark saved">01</div><div class="version-copy"><b>上一版校招简历</b><span>校招一页版 · 正式版本</span><small>保存于 2026-09-14 · A4 · 1 页</small></div><em class="saved-label">已保存</em><button class="secondary-button" type="button">打开</button></article><article class="version-row"><div class="version-mark saved">02</div><div class="version-copy"><b>AI 产品经理定向版</b><span>针对产品岗位的投递版本</span><small>保存于 2026-09-12 · A4 · 1 页</small></div><em class="saved-label">已保存</em><button class="secondary-button" type="button">打开</button></article></div></div>`
+async function renderTemplates() {
+  const view = $('#routeView')
+  view.scrollTop = 0
+  if (!liveState.workspaceId) {
+    view.innerHTML = '<div class="empty-view">请先选择工作区，模板库会展示当前简历在每个真实模板下的渲染结果。</div>'
+    return
+  }
+  view.innerHTML = '<div class="templates-page"><div class="loading-line">正在读取工作区模板…</div></div>'
+  try {
+    const { body } = await api.get(`/api/templates?workspaceId=${encodeURIComponent(liveState.workspaceId)}`)
+    liveState.templates = Array.isArray(body.templates) ? body.templates : []
+    const selected = liveState.templates.find((item) => item.id === liveState.templateId)
+    if (selected) liveState.templateName = selected.name || selected.id
+    view.innerHTML = `<div class="templates-page"><div class="template-grid">${liveState.templates.map(templateCard).join('')}</div></div>`
+    view.scrollTop = 0
+    syncTemplatePreviewFrames()
+    $$('.template-select').forEach((button) => button.addEventListener('click', () => {
+      const template = liveState.templates.find((item) => item.id === button.dataset.template)
+      void applyTemplate(template, button)
+    }))
+    updateTemplateCards()
+  } catch (error) {
+    view.innerHTML = `<div class="empty-view">模板库读取失败：${escapeHtml(errorText(error))}</div>`
+    showToast(`模板库读取失败：${errorText(error)}`)
+  }
+}
+
+function checkStatusLabel(status) {
+  return status === 'pass' ? '通过' : status === 'error' ? '阻断' : '提醒'
+}
+
+function renderCheckContent(task, quality) {
+  const measurement = task?.measurements || liveState.measurement
+  const blockers = Array.isArray(task?.blockers) ? task.blockers : []
+  const qualityChecks = Array.isArray(quality?.checks) ? quality.checks : []
+  const details = [...blockers.map((message, index) => ({ id: `blocker-${index}`, status: 'error', message, detail: '真实 A4 验收阻断项' })), ...qualityChecks]
+  const pageText = measurement ? `${measurement.pageCount} 页` : '待测量'
+  const target = Number(task?.targetPages || liveState.targetPages || 1)
+  const renderText = task?.context?.renderId || liveState.renderId ? '已生成' : '暂无'
+  const gateText = task?.state === 'accepted' ? '可保存' : '不可用'
+  const rows = details.length
+    ? details.map((item) => `<article class="blocker-item check-item ${item.status}"><i>${item.status === 'pass' ? '✓' : item.status === 'error' ? '!' : '·'}</i><div><b>${escapeHtml(item.message || '未命名检查')}</b><p>${escapeHtml(item.detail || `内容预检 · ${checkStatusLabel(item.status)}`)}</p><span>${checkStatusLabel(item.status)}</span></div></article>`).join('')
+    : '<div class="empty-view">当前没有内容或排版阻断项。</div>'
+  return `<div class="checks-page"><div class="check-overview"><div><small>当前页数</small><strong>${pageText}</strong><span>目标 ${target} 页</span></div><div><small>当前渲染</small><strong>${renderText}</strong><span>${escapeHtml(task?.context?.renderId || liveState.renderId || '尚未生成 render')}</span></div><div><small>保存正式版</small><strong>${gateText}</strong><span>需要真实 A4 验收通过</span></div></div><div class="check-summary"><span>内容预检得分 ${quality ? `${quality.score}/100` : '待检查'}</span><span>任务状态 ${escapeHtml(task?.state || liveState.workflowState || '未知')}</span></div><div class="blocker-list">${rows}</div><div class="check-actions"><button class="secondary-button" type="button" data-check-route="workbench">回到编辑</button><button class="secondary-button" type="button" data-check-route="preview">查看成品</button></div></div>`
+}
+
+async function renderChecks() {
+  const view = $('#routeView')
+  view.scrollTop = 0
+  if (!liveState.sessionId) {
+    view.innerHTML = '<div class="empty-view">请先选择工作区并加载当前会话，才能进行真实检查。</div>'
+    return
+  }
+  view.innerHTML = '<div class="checks-page"><div class="loading-line">正在读取当前 session 并执行内容预检…</div></div>'
+  try {
+    const sessionResponse = await api.get(`/api/session?sessionId=${encodeURIComponent(liveState.sessionId)}`)
+    const task = sessionResponse.body.session?.taskRef?.current || {}
+    liveState.workflowState = sessionResponse.body.state || liveState.workflowState
+    liveState.targetPages = task.targetPages || liveState.targetPages
+    liveState.measurement = task.measurements || liveState.measurement
+    const qualityResponse = await api.post('/api/agent/quality', { sessionId: liveState.sessionId, target: 'draft', targetPages: liveState.targetPages })
+    liveState.blockerCount = (task.blockers?.length || 0) + (qualityResponse.body.result?.checks || []).filter((item) => item.status === 'error').length
+    view.innerHTML = renderCheckContent(task, qualityResponse.body.result)
+    view.scrollTop = 0
+    $$('[data-check-route]').forEach((button) => button.addEventListener('click', () => renderRoute(button.dataset.checkRoute)))
+    updateHeader()
+  } catch (error) {
+    view.innerHTML = `<div class="empty-view">检查失败：${escapeHtml(errorText(error))}</div>`
+    showToast(`检查失败：${errorText(error)}`)
+  }
+}
+
+function versionDate(value) {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString()
+}
+
+async function openVersion(versionId) {
+  try {
+    const { body } = await api.get(`/api/version?workspaceId=${encodeURIComponent(liveState.workspaceId)}&versionId=${encodeURIComponent(versionId)}`)
+    liveState.draftContent = body.version?.content || liveState.draftContent
+    renderRoute('workbench')
+    showToast(`已加载「${body.version?.name || versionId}」到编辑区；应用后写入当前隔离草稿`)
+  } catch (error) {
+    showToast(`版本打开失败：${errorText(error)}`)
+  }
+}
+
+async function renameVersion(version) {
+  const name = window.prompt('请输入新的版本名称', version.name || '')
+  if (!name || name.trim() === version.name) return
+  try {
+    await api.post('/api/versions/rename', { workspaceId: liveState.workspaceId, versionId: version.id, name: name.trim() })
+    showToast(`版本已改名为「${name.trim()}」`)
+    await renderVersions()
+  } catch (error) {
+    showToast(`版本改名失败：${errorText(error)}`)
+  }
+}
+
+async function archiveVersion(version) {
+  if (!window.confirm(`确认归档「${version.name || version.id}」？归档不会删除文件。`)) return
+  try {
+    await api.post('/api/versions/archive', { workspaceId: liveState.workspaceId, versionId: version.id })
+    showToast(`版本「${version.name || version.id}」已归档`)
+    await renderVersions()
+  } catch (error) {
+    showToast(`版本归档失败：${errorText(error)}`)
+  }
+}
+
+async function renderVersions() {
+  const view = $('#routeView')
+  view.scrollTop = 0
+  if (!liveState.workspaceId) {
+    view.innerHTML = '<div class="empty-view">请先选择工作区，正式版本会保存在当前工作区。</div>'
+    return
+  }
+  view.innerHTML = '<div class="versions-page"><div class="loading-line">正在读取工作区正式版本…</div></div>'
+  try {
+    const { body } = await api.get(`/api/versions?workspaceId=${encodeURIComponent(liveState.workspaceId)}`)
+    const versions = Array.isArray(body.versions) ? body.versions : []
+    const createDisabled = liveState.workflowState !== 'accepted'
+    const records = versions.map((version, index) => `<article class="version-row"><div class="version-mark saved">${String(index + 1).padStart(2, '0')}</div><div class="version-copy"><b>${escapeHtml(version.name || '未命名版本')}</b><span>${escapeHtml(version.templateId || '未记录模板')} · ${escapeHtml(version.templateRevision || '未记录修订')}</span><small>保存于 ${escapeHtml(versionDate(version.savedAt))} · ${version.archived ? '已归档' : '正式版本'}</small></div><em class="${version.archived ? '' : 'saved-label'}">${version.archived ? '已归档' : '已保存'}</em><div class="version-actions"><button class="secondary-button" type="button" data-version-open="${escapeHtml(version.id)}">打开</button><button class="secondary-button" type="button" data-version-rename="${escapeHtml(version.id)}" ${version.archived ? 'disabled' : ''}>改名</button><button class="secondary-button" type="button" data-version-archive="${escapeHtml(version.id)}" ${version.archived ? 'disabled' : ''}>归档</button></div></article>`).join('')
+    view.innerHTML = `<div class="versions-page"><div class="page-toolbar"><button class="primary-small" id="createVersionButton" type="button" ${createDisabled ? 'disabled' : ''} title="${createDisabled ? '真实 A4 验收通过后才能保存正式版本' : '保存当前正式版本'}">创建正式版本</button></div><div class="version-list"><article class="version-row current"><div class="version-mark">D</div><div class="version-copy"><b>当前隔离草稿</b><span>${escapeHtml(liveState.templateName || liveState.templateId)} · ${escapeHtml(liveState.workflowState || '未知状态')}</span><small>${liveState.renderId ? '已生成 render，' : '尚未生成 render，'}${liveState.measurement ? '已有真实测量' : '等待真实 A4 测量'}</small></div><em>未固化</em><button class="secondary-button" type="button" data-version-route="workbench">继续调整</button></article>${records || '<div class="empty-view">当前工作区还没有正式投递版本。真实验收通过后可创建。</div>'}</div></div>`
+    view.scrollTop = 0
+    const createButton = $('#createVersionButton')
+    if (createButton) createButton.addEventListener('click', () => { void saveCurrentVersion() })
+    $('[data-version-route]')?.addEventListener('click', () => renderRoute('workbench'))
+    for (const button of $$('[data-version-open]')) button.addEventListener('click', () => { void openVersion(button.dataset.versionOpen) })
+    for (const button of $$('[data-version-rename]')) { const version = versions.find((item) => item.id === button.dataset.versionRename); button.addEventListener('click', () => { if (version) void renameVersion(version) }) }
+    for (const button of $$('[data-version-archive]')) { const version = versions.find((item) => item.id === button.dataset.versionArchive); button.addEventListener('click', () => { if (version) void archiveVersion(version) }) }
+  } catch (error) {
+    view.innerHTML = `<div class="empty-view">版本读取失败：${escapeHtml(errorText(error))}</div>`
+    showToast(`版本读取失败：${errorText(error)}`)
+  }
 }
 
 function appendAgentResponse(text) {
@@ -587,13 +951,14 @@ async function saveCurrentVersion() {
     showToast('版本名称不能为空')
     return
   }
-  const button = $('#saveVersionButton')
+  const button = $('#saveVersionButton, #createVersionButton')
   if (button) button.disabled = true
   try {
     const { body } = await api.post('/api/agent/save', { sessionId: liveState.sessionId, name: trimmedName, confirm: true })
     liveState.workflowState = body.state || 'saved'
     updateHeader()
     showToast(`正式版本「${body.version?.name || trimmedName}」已保存`)
+    if (currentRoute === 'versions') await renderVersions()
   } catch (error) {
     showToast(`保存正式版本失败：${errorText(error)}`)
   } finally {
@@ -602,6 +967,7 @@ async function saveCurrentVersion() {
 }
 
 function bindChat() {
+  connectWorkflowEvents()
   $('#composer').addEventListener('submit', (event) => {
     event.preventDefault()
     const input = $('#messageInput')
@@ -621,8 +987,8 @@ function bindChat() {
     stream.append(article)
     input.value = ''
     article.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    updateSessionStatus('草稿已更新 · 需要重新渲染')
-    showToast('已加入当前会话草稿')
+    updateSessionStatus('Agent 处理中')
+    showToast('已发送，Agent 正在处理当前会话')
     const progress = document.createElement('div')
     progress.className = 'turn-progress is-running'
     progress.setAttribute('role', 'status')
@@ -647,10 +1013,12 @@ function bindChat() {
         appendAgentResponse(assistantMessage)
         syncPreviewFrames()
         updateHeader()
+        void loadSessionsForWorkspace()
       })
       .catch((error) => {
         progress.classList.remove('is-running')
         progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 执行失败</span><time>失败</time>'
+        updateSessionStatus('Agent 执行失败')
         showToast(`Agent 执行失败：${errorText(error)}`)
       })
   })
@@ -658,22 +1026,24 @@ function bindChat() {
 
 function renderRoute(route) {
   currentRoute = route
+  $('#routeView').scrollTop = 0
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.route === route))
   if (route !== 'workbench') setPreviewOpen(false)
   if (route === 'workbench') { $('#routeActions').innerHTML = '<button class="ghost-button" id="saveVersionButton" type="button" disabled>保存正式版</button><button class="ghost-button" id="workbenchAssistantButton" type="button">打开 Agent</button>'; renderWorkbench() }
-  if (route === 'preview') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">导出预览</button>'; renderPreview() }
-  if (route === 'templates') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">导入模板</button>'; renderTemplates() }
-  if (route === 'checks') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">重新检查</button>'; renderChecks() }
-  if (route === 'versions') { $('#routeActions').innerHTML = '<button class="ghost-button" type="button">版本说明</button>'; renderVersions() }
+  if (route === 'preview') { $('#routeActions').innerHTML = ''; renderPreview() }
+  if (route === 'templates') { $('#routeActions').innerHTML = ''; void renderTemplates() }
+  if (route === 'checks') { $('#routeActions').innerHTML = '<button class="ghost-button" id="recheckButton" type="button">重新检查</button>'; void renderChecks() }
+  if (route === 'versions') { $('#routeActions').innerHTML = ''; void renderVersions() }
   updateHeader()
   const assistantButton = $('#workbenchAssistantButton')
   if (assistantButton) assistantButton.addEventListener('click', () => setPreviewOpen(!previewOpen))
   const saveButton = $('#saveVersionButton')
   if (saveButton) saveButton.addEventListener('click', () => { void saveCurrentVersion() })
+  const recheckButton = $('#recheckButton')
+  if (recheckButton) recheckButton.addEventListener('click', () => { void renderChecks() })
 }
 
 $$('.nav-item').forEach((item) => item.addEventListener('click', () => renderRoute(item.dataset.route)))
-$$('.session-item').forEach((item) => item.addEventListener('click', () => { currentSession = item.dataset.session; $$('.session-item').forEach((session) => session.classList.toggle('active', session === item)); renderRoute(currentRoute); showToast(`已切换到「${sessions[currentSession].title}」`) }))
 $('#drawerClose').addEventListener('click', () => setPreviewOpen(false))
 $('#workspaceSwitcher').addEventListener('click', () => { const button = $('#workspaceSwitcher'); const menu = $('#workspaceMenu'); const open = button.getAttribute('aria-expanded') === 'true'; button.setAttribute('aria-expanded', String(!open)); menu.hidden = open })
 $('#workspaceImportButton').addEventListener('click', () => { $('#workspaceMenu').hidden = true; $('#workspaceSwitcher').setAttribute('aria-expanded', 'false'); $('#workspaceFiles').click() })
@@ -681,7 +1051,13 @@ $('#workspaceFiles').addEventListener('change', (event) => {
   const files = event.target.files
   void importSelectedWorkspace(files).then(() => showToast('工作区导入完成')).catch((error) => showToast(`导入失败：${errorText(error)}`)).finally(() => { event.target.value = '' })
 })
-$('#newSession').addEventListener('click', () => showToast('已准备新会话入口'))
+$('#newSession').addEventListener('click', () => {
+  if (!liveState.workspace) {
+    showToast('请先选择工作区')
+    return
+  }
+  void bootstrapWorkspace(liveState.workspace).then(() => showToast('已创建新的隔离会话')).catch((error) => showToast(`新建会话失败：${errorText(error)}`))
+})
 
 updateConnectionStatus()
 bindResizableLayout()

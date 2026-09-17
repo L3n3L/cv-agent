@@ -18,7 +18,7 @@ CVAgent 已经具备可直接承载 demo UI 的后端边界：
 - `src/migrated/resume-engine/` 负责真实模板与 A4 渲染；
 - `src/agent/deep-agent.js` 已接入 `deepagents` Harness，真实模型调用和工具循环可运行；
 - 当前真实前端在同仓库 `frontend/`，已经连接工作区导入、bootstrap、源文件、Agent、draft/render 和 A4 iframe 测量；
-- 当前主要问题不再是“前端完全没有接线”，而是正式保存、测量后的 Agent 续跑、模板/检查/版本页面仍未完全接入。
+- 当前主要问题不再是“前端完全没有接线”。本轮已补齐正式保存、测量后的 Agent 续跑、真实模板库、排版检查、投递版本、工作区会话列表、实时工具过程和基础版式微调；剩余重点转为完整 presentation 字段、正式导出和最终回归。
 
 ### demo v2
 
@@ -46,26 +46,25 @@ demo v2 是视觉与交互样本，不是生产后端：
 | demo v2 区域 | CVAgent 真实来源 |
 | --- | --- |
 | 工作区切换 | `GET /api/workspaces`、`POST /api/workspaces/import` |
-| 会话列表 | `GET /api/sessions`、`GET /api/session` |
+| 会话列表 | `GET /api/sessions`、`GET /api/session`（公开摘要，不下发服务端绝对路径） |
 | Markdown 编辑 | `GET /api/source`、`POST /api/agent/draft` |
 | A4 预览 | `POST /api/agent/bootstrap`、`POST /api/agent/render`、`GET /api/agent/preview` |
 | Agent 对话 | `POST /api/agent/run`、测量阻断后的 `POST /api/agent/continue` |
-| 模板库 | `GET /api/templates`、`GET /api/template`、模板复制/保存接口；当前页面仍有硬编码卡片 |
+| Agent 执行过程 | `GET /api/agent/events?sessionId=...`（SSE，脱敏工具状态） |
+| 模板库 | `GET /api/templates`、`GET /api/template`、只读真实模板预览、模板选择/复制/保存接口 |
 | 排版检查 | `POST /api/agent/quality`、`POST /api/agent/measure` |
-| 投递版本 | `GET /api/versions`、`GET /api/version`、版本改名/归档/保存接口；当前页面仍有静态版本行 |
+| 投递版本 | `GET /api/versions`、`GET /api/version`、版本改名/归档/保存接口 |
 
-当前采用请求完成后更新 UI 的方式。工作区、bootstrap、源文件、Agent、draft/render 和预览测量已进入真实请求链；测量回传使用 `sessionId + renderId` 去重并校验，验收阻断时由 `/api/agent/continue` 恢复同一会话继续修订。若需要像 Codex 一样在 Agent 执行过程中实时显示工具步骤，再新增按 `sessionId` 订阅的事件流；这属于 CVAgent 后端的增量能力，不需要迁移后端。
+工作区、bootstrap、源文件、会话历史、Agent、draft/render、模板真实预览、模板切换、检查、版本和预览测量已进入真实请求链；测量回传使用 `sessionId + renderId` 去重并校验，验收阻断时由 `/api/agent/continue` 恢复同一会话继续修订。Agent 执行过程中通过 `GET /api/agent/events?sessionId=...` 订阅脱敏的 SSE 工具事件，前端只更新轻量过程行，最终结果仍以 Agent API 响应和 session 重新读取为准。
 
 ## 5. Git 仓库决策
 
-当前保留两个 Git 仓库：
+当前采用一个父仓库 `cv-agent`，前后端目录分离：
 
-- `cvagent-ui-demo-v2`：唯一前端，维护页面、交互、API Client 和浏览器测试；
-- `CVAgent`：业务后端，维护 API、Agent、工作区、模板和渲染。
+- `frontend/`：唯一正式前端，维护页面、交互、API Client 和浏览器验收；
+- `backend/`：业务后端，维护 API、Agent、工作区、模板、渲染和日志。
 
-不把两个已有仓库强行合并。现在合并会带来历史迁移、路径变化和提交边界噪音，不能解决真正的维护问题。两个仓库用版本化 API 契约协同，开发期由 demo server 通过 `CVAGENT_API_ORIGIN` 代理 `/api/*`；生产期再由反向代理统一为同源地址。
-
-如果未来需要原子发布，在父目录增加启动脚本或 CI 编排即可，不需要合并 Git 历史。
+前后端仍保持代码边界和独立启动方式，但共用一次提交、一次版本和一次回归，符合当前项目早期“前后端需要同步演进”的维护目标。开发期由 `frontend/server.mjs` 通过 `CVAGENT_API_ORIGIN` 代理 `/api/*`；生产期由反向代理统一为同源地址。未来规模足够大时再拆仓库，不以拆仓库代替模块边界。
 
 ## 6. 冗余清理清单
 
@@ -105,9 +104,9 @@ demo v2 是视觉与交互样本，不是生产后端：
 - 增加统一 API Client，集中处理工作区、会话、源文件、模板、预览、Agent、检查和版本接口；
 - 清理前端核心工作台的假响应，接入真实 API；
 - 已完成工作区导入、session bootstrap、源文件加载、真实 Agent 对话、draft/render 和真实 A4 iframe；
-- 模板库、排版检查、投递版本和正式保存仍需逐项接通，不能以静态卡片代替真实业务。
+- 模板库、排版检查、投递版本和正式保存已在后续阶段逐项接通，不再以静态卡片代替真实业务。
 
-### 第二阶段：交付闭环补齐（当前执行）
+### 第二阶段：交付闭环补齐（已完成）
 
 - 修复 iframe 测量回传的 `sessionId/renderId/contentVersion/templateRevision` 一致性；
 - [x] 增加测量完成后的 Agent 续跑或可恢复 continuation，完成 `render → measure → finalize`；
@@ -115,18 +114,21 @@ demo v2 是视觉与交互样本，不是生产后端：
 - [x] iframe 测量按当前 `sessionId/renderId` 去重，避免同一成品重复回传导致状态竞争；
 - 当前会话标题、工作区、模板和状态继续以 session/context 为唯一来源。
 
-### 第三阶段：真实资源页
+### 第三阶段：真实资源页（已完成本轮）
 
-- 模板库改为读取 `/api/templates`，选择模板后调用真实 template API 并重新渲染；
-- 排版检查页读取当前 session 的 quality/measurement/verification，不再展示固定阻断项；
-- 投递版本页读取 `/api/versions`，接通打开、改名、归档和创建正式版本；
-- 清理仅为演示保留的静态会话、模板、检查和版本数据。
+- [x] 模板库读取 `/api/templates`，每张卡片通过只读渲染接口展示真实模板缩略图，选择模板后调用真实 template API 并重新渲染；
+- [x] 排版检查页读取当前 session 的 quality/measurement/verification，不再展示固定阻断项；
+- [x] 投递版本页读取 `/api/versions`，接通打开、改名、归档和创建正式版本；
+- [x] 工作区会话列表读取 `/api/sessions`，新建会话和恢复历史会话走真实 bootstrap/session API；
+- [x] 删除模板库、检查、版本和会话在正式前端中的固定展示数据。
 
-### 第四阶段：实时工具过程
+### 第四阶段：实时工具过程与人工微调
 
-- 从现有 workflow event catalog 提供轻量事件订阅；
-- 前端按 started/completed/failed 更新工具行；
-- 保留断线恢复和最终状态重新读取。
+- [x] 从现有 workflow event catalog 提供按 session 的轻量 SSE 事件订阅；
+- [x] 前端按 started/completed/failed 更新 Agent 过程行，事件投递失败不影响业务；
+- [x] 事件流只发送脱敏状态和关联字段，最终状态仍由 API 响应/session 读取确认；
+- [x] 将现有 presentation 微调 API 接回工作台预览区的低干扰展开面板，字号、行高、段落间距和页边距修改都会重新渲染并重新测量；
+- [ ] 将颜色、分隔线、图标 tuning 等完整 presentation 字段接回面板；
 
 ## 9. 生产级日志要求
 
@@ -151,12 +153,21 @@ CVAgent 现有日志模块已经具备脱敏、滚动和保留能力，前端代
 - [x] Markdown 草稿修改会重新渲染真实预览；
 - [x] iframe 测量结果稳定写入当前 session，并能驱动 Agent 继续修订/重新渲染；
 - [x] 用户确认后可以从当前 accepted session 保存正式版本；
-- [ ] 模板库显示真实模板并可应用；
-- [ ] 预览、编辑区、侧栏和 Agent 抽屉可收放/拖拽；
+- [x] 模板库显示真实模板并可应用；
+- [x] 预览、编辑区、侧栏和 Agent 抽屉可收放/拖拽；
 - [x] 会话刷新后可以恢复；
-- [ ] 验收通过后才能保存正式版本；
-- [ ] 旧的手动排版微调能力没有被视觉重构隐藏或删除；
-- [ ] 浏览器控制台没有新增错误，现有单元测试通过。
+- [x] 验收通过后才能保存正式版本；
+- [ ] 旧的手动排版微调能力没有被视觉重构隐藏或删除（基础间距微调已接回，颜色/分隔线/图标 tuning 尚未接回）；
+- [ ] 浏览器控制台没有新增错误，现有单元测试通过（本轮单元测试已通过；需在最终干净浏览器会话再做一次控制台回归）。
+
+### 10.1 本轮截图验收记录（2026-09-17）
+
+- [x] 工作台截图确认四列关系为“导航｜编辑器｜A4 预览｜Agent 抽屉”，Agent 打开时预览仍保持同一行；
+- [x] 模板库截图确认六张缩略图来自真实模板渲染接口，而不是占位色块或静态图片；进入模板库时主动回到顶部，避免继承工作台滚动位置；
+- [x] 侧栏收起截图确认只保留一个恢复按钮，不残留窄栏占位；
+- [x] 截图过程中发现并修复 Agent 打开时响应式网格把拖拽条撑满第二列、导致 A4 预览换行的 CSS 回归；
+- [x] 发现并修复前端 SSE 客户端断开时代理重复写响应头导致进程退出的问题，断开现在只记录结构化 info 日志；
+- [ ] CUA 浏览器控制台仍报告外部观测脚本的 `MutationObserver.observe` 参数错误；仓库前端源码不包含该调用，需用不注入观测脚本的浏览器再做一次最终回归。
 
 ## 11. 不在本次范围内
 
@@ -168,6 +179,6 @@ CVAgent 现有日志模块已经具备脱敏、滚动和保留能力，前端代
 
 ## 12. 本轮结论
 
-此前“后端基本都有、前端只接了空态和错误上报”的判断只适用于接线前快照，当前已被 `8e7d772` 的真实前端接线提交修正。随后本轮补齐了 `render → measure → verify → continue/save` 的关键交付闭环：测量由浏览器回传真实结果，后端按 render 身份验证并持久化；未通过时由同一 session 继续调用 Agent，只有 accepted session 才允许正式保存。现在的准确定位是：核心制作链路已真实打通，剩余工作集中在真实资源页、会话历史渲染和实时工具过程，而不是重新迁移后端。
+此前“后端基本都有、前端只接了空态和错误上报”的判断只适用于接线前快照，当前已被 `8e7d772` 的真实前端接线提交修正。随后补齐了 `render → measure → verify → continue/save` 交付闭环，并在本轮完成真实模板预览/选择、检查、版本、会话历史、实时工具过程和基础手动微调：测量由浏览器回传真实结果，后端按 render 身份验证并持久化；未通过时由同一 session 继续调用 Agent，只有 accepted session 才允许正式保存；会话 API 只向浏览器返回公开摘要。现在的准确定位是：核心制作和资源管理链路已真实打通，剩余工作集中在完整 presentation 字段、正式导出和最终干净浏览器回归，而不是重新迁移后端。
 
 本轮开发原则：`deepagents` 负责规划和工具循环，Skill 负责可变的简历业务判断，工具和后端状态机负责不可绕过的事实与完成门。不要把 DSH 的全部 MCP 指南机械复制进每轮 Prompt，也不能因为使用成熟 Harness 就省略 `resume_metrics`、用户确认和正式保存等真实业务节点。

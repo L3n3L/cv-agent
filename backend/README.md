@@ -16,6 +16,8 @@ CVAgent 是独立的 AI 简历生产产品。原有插件只作为可迁移能�
 - 不覆盖源文件的隔离草稿写入；
 - `POST /api/agent/run` 的独立 Agent 调用入口；
 - 测量阻断后的同会话 Agent 续跑入口 `POST /api/agent/continue`。
+- Agent 工具过程事件流 `GET /api/agent/events?sessionId=...`（SSE）；
+- 真实模板画廊预览 `GET /api/template-preview?sessionId=...&templateId=...`。
 
 ## 运行
 
@@ -31,8 +33,10 @@ Agent 调用入口：`POST http://127.0.0.1:3180/api/agent/run`
 浏览器测量回传入口：`POST http://127.0.0.1:3180/api/agent/measure`
 测量未通过时继续当前 Agent：`POST http://127.0.0.1:3180/api/agent/continue`（必须携带当前 `sessionId` 和 `renderId`）
 当前渲染预览：`GET http://127.0.0.1:3180/api/agent/preview?sessionId=...`
+Agent 工具过程：`GET http://127.0.0.1:3180/api/agent/events?sessionId=...`（`text/event-stream`，只发送脱敏后的状态和关联字段）
+模板画廊真实缩略图：`GET http://127.0.0.1:3180/api/template-preview?sessionId=...&templateId=...`
 正式版本保存：`POST http://127.0.0.1:3180/api/agent/save`（必须明确传 `confirm: true`）
-历史会话（兼容旧调用）：`GET http://127.0.0.1:3180/api/sessions?workspaceRoot=...&resumePath=resume.md`
+历史会话（兼容旧调用）：`GET http://127.0.0.1:3180/api/sessions?workspaceRoot=...&resumePath=resume.md`；返回公开摘要，不包含绝对路径、source hash 或 render 绝对路径。
 恢复会话：`GET http://127.0.0.1:3180/api/session?sessionId=...`
 
 工作区选择入口：

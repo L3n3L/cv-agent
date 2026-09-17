@@ -48,7 +48,10 @@ export function recordDraftWrite(task, artifact = {}) {
 }
 
 export function recordTemplateChange(task, artifact = {}) {
-  const { templateRevision: _currentTemplateRevision, ...stableContext } = task.context
+  // Both template identity fields are expected to change together. Keeping
+  // the previous templateId in the stable context made an explicit gallery
+  // selection fail before the new render could be created.
+  const { templateId: _currentTemplateId, templateRevision: _currentTemplateRevision, ...stableContext } = task.context
   assertContextMatch(stableContext, artifact, 'template')
   if ([TASK_STATES.USER_CONFIRMED, TASK_STATES.SAVED].includes(task.state)) throw new Error(`cannot mutate a ${task.state} resume task`)
   const next = clone(task)

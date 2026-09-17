@@ -1,6 +1,10 @@
 import { contextFields } from './context.js'
-import { emitWorkflowEvent, workflowContext } from './event-catalog.js'
+import { emitWorkflowEvent, WORKFLOW_EVENTS, workflowContext } from './event-catalog.js'
 import { createLogger } from './logger.js'
+
+async function emitToolEvent(options, payload) {
+  try { await options.onEvent?.(payload) } catch { /* observability must not break the tool */ }
+}
 
 function resolveWorkflowEvent(spec, stage, payload) {
   if (!spec) return null
@@ -21,6 +25,7 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
   const taskWithSession = options.sessionId ? { ...task, sessionId: options.sessionId } : task
   const base = { toolName: String(toolName), ...workflowContext(taskWithSession) }
   await logger.info('tool_call_started', base)
+  await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_STARTED, task: taskWithSession, toolName: String(toolName) })
   const workflow = options.workflowEvent
   const emit = async (stage, result, error) => {
     const event = resolveWorkflowEvent(workflow, stage, { result, error, task, toolName })
@@ -36,11 +41,13 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
   try {
     const result = await handler(task)
     await logger.info('tool_call_succeeded', { ...base, durationMs: Date.now() - startedAt, resultSummary: options.resultSummary?.(result) || {} })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), durationMs: Date.now() - startedAt })
     await emit('succeeded', result)
     await options.onSuccess?.({ toolName: String(toolName), result, task })
     return result
   } catch (error) {
     await logger.error('tool_call_failed', { ...base, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED'), errorMessage: String(error?.message || error) })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_FAILED, task: taskWithSession, toolName: String(toolName), durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED') })
     await emit('failed', null, error)
     throw error
   }

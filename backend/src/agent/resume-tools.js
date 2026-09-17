@@ -17,7 +17,7 @@ export function createResumeToolHandlers(options = {}) {
   if (!options.workspaceRoot || !options.resumePath || !options.taskRef) throw new Error('workspaceRoot, resumePath and taskRef are required')
   const logger = options.logger
   const taskRef = options.taskRef
-  const run = (toolName, handler, runOptions = {}) => runResumeTool(taskRef.current, toolName, handler, { logger, sessionId: options.sessionId, onSuccess: options.onToolSuccess, ...runOptions })
+  const run = (toolName, handler, runOptions = {}) => runResumeTool(taskRef.current, toolName, handler, { logger, sessionId: options.sessionId, onSuccess: options.onToolSuccess, onEvent: options.onWorkflowEvent, ...runOptions })
   return {
     async resumePrepare() {
       return run('resume_prepare', async () => {

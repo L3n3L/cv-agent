@@ -18,6 +18,7 @@ import { archiveResumeVersion, ensureWorkspace, listResumeVersions, listWorkspac
 import { createWorkspaceRegistry } from './core/workspace-registry.js'
 import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/workflow.js'
 import { copyWorkspaceTemplate, listWorkspaceTemplates, loadWorkspaceTemplate, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
+import { renderResumeDraft } from './core/render.js'
 
 const port = Number(process.env.CVAGENT_PORT || 3180)
 const logger = createLogger({ component: 'cvagent-server' })
@@ -47,6 +48,58 @@ function assistantText(result) {
   return ''
 }
 
+function createWorkflowEventBroker() {
+  const clients = new Map()
+  return {
+    subscribe(sessionId, response) {
+      const key = String(sessionId)
+      const current = clients.get(key) || new Set()
+      current.add(response)
+      clients.set(key, current)
+      const cleanup = () => {
+        clearInterval(heartbeat)
+        current.delete(response)
+        if (!current.size) clients.delete(key)
+      }
+      const heartbeat = setInterval(() => {
+        if (response.writableEnded || response.destroyed) { cleanup(); return }
+        try { response.write(': keep-alive\n\n') } catch { cleanup() }
+      }, 15000)
+      heartbeat.unref?.()
+      response.once('close', cleanup)
+      return cleanup
+    },
+    publish(sessionId, event) {
+      const current = clients.get(String(sessionId))
+      if (!current?.size) return
+      const data = `event: workflow\ndata: ${JSON.stringify(event)}\n\n`
+      for (const response of current) {
+        try { response.write(data) } catch { response.destroy() }
+      }
+    },
+  }
+}
+
+async function notifyWorkflowEvent(handler, payload) {
+  try { await handler?.(payload) } catch { /* live event delivery is best effort */ }
+}
+
+function publishWorkflowEvent(broker, session, event = {}) {
+  if (!broker || !session?.sessionId || !event?.event) return
+  const task = event.task || session.taskRef?.current || {}
+  broker.publish(session.sessionId, {
+    timestamp: new Date().toISOString(),
+    event: event.event,
+    sessionId: session.sessionId,
+    ...contextFields(task.context),
+    ...(event.toolName ? { toolName: event.toolName } : {}),
+    ...(event.mode ? { mode: event.mode } : {}),
+    ...(event.outcome ? { outcome: event.outcome } : {}),
+    ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+  })
+}
+
 async function runAgentTurn(session, message, options = {}) {
   const taskRef = session.taskRef
   const task = taskRef.current
@@ -57,7 +110,8 @@ async function runAgentTurn(session, message, options = {}) {
   session.lastError = null
   await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, ...contextFields(task.context) })
   await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, resumePath: session.resumePath })
-  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode })
+  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: options.onWorkflowEvent })
   const agent = await options.agentFactory({ tools, task, taskRef })
   if (!agent || typeof agent.invoke !== 'function') throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
   const result = await agent.invoke({ messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] })
@@ -68,6 +122,7 @@ async function runAgentTurn(session, message, options = {}) {
   session.lastError = null
   await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, ...contextFields(nextTask.context) })
   await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode })
+  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...nextTask, sessionId: session.sessionId }, outcome: 'success', mode })
   return { result, task: nextTask }
 }
 
@@ -101,12 +156,24 @@ function sessionToolPersistence(sessionStore, session) {
   }
 }
 
+function publicSessionSummary(sessionStore, session, includeMessages = false) {
+  const value = sessionStore.summary(session, includeMessages)
+  delete value.workspaceRoot
+  delete value.sourceHash
+  if (value.taskRef) {
+    delete value.taskRef.renderAbsolutePath
+    delete value.taskRef.draftRelativePath
+  }
+  return value
+}
+
 export function createServer(options = {}) {
   const serverLogger = options.logger || logger
   const agentFactory = options.agentFactory || ((agentOptions) => createConfiguredResumeAgent(agentOptions))
   const sessions = new Map()
   const sessionStore = options.sessionStore || createSessionStore({ directory: options.sessionDirectory })
   const workspaceRegistry = options.workspaceRegistry || createWorkspaceRegistry({ directory: options.workspaceDirectory })
+  const workflowEvents = createWorkflowEventBroker()
   const server = http.createServer((request, response) => {
     const requestId = `req_${crypto.randomUUID()}`
     const route = requestRoute(request.url)
@@ -155,6 +222,10 @@ export function createServer(options = {}) {
       void handleTemplate(request, response, { workspaceRegistry })
       return
     }
+    if (request.method === 'GET' && request.url?.startsWith('/api/template-preview?')) {
+      void handleTemplatePreview(request, response, { sessions, sessionStore, serverLogger: requestLogger })
+      return
+    }
     if (request.method === 'GET' && request.url?.startsWith('/api/asset?')) {
       void handleAsset(request, response, { workspaceRegistry })
       return
@@ -179,6 +250,10 @@ export function createServer(options = {}) {
       void handleVersions(request, response, { workspaceRegistry })
       return
     }
+    if (request.method === 'GET' && request.url?.startsWith('/api/agent/events?')) {
+      void handleAgentEvents(request, response, { sessions, sessionStore, serverLogger: requestLogger, workflowEvents })
+      return
+    }
     if (request.method === 'GET' && request.url?.startsWith('/api/version?')) {
       void handleVersion(request, response, { workspaceRegistry })
       return
@@ -188,15 +263,15 @@ export function createServer(options = {}) {
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/run') {
-      void handleAgentRun(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workspaceRegistry })
+      void handleAgentRun(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workspaceRegistry, workflowEvents })
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/continue') {
-      void handleAgentContinue(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore })
+      void handleAgentContinue(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workflowEvents })
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/measure') {
-      void handleMeasurement(request, response, { serverLogger: requestLogger, sessions, sessionStore })
+      void handleMeasurement(request, response, { serverLogger: requestLogger, sessions, sessionStore, workflowEvents })
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/save') {
@@ -204,7 +279,7 @@ export function createServer(options = {}) {
       return
     }
     if (request.method === 'POST' && (request.url === '/api/agent/template' || request.url === '/api/agent/template-copy' || request.url === '/api/agent/presentation' || request.url === '/api/agent/quality' || request.url === '/api/agent/draft' || request.url === '/api/agent/render')) {
-      void handleDomainAction(request, response, { serverLogger: requestLogger, sessions, sessionStore, action: request.url.split('/').at(-1) })
+      void handleDomainAction(request, response, { serverLogger: requestLogger, sessions, sessionStore, action: request.url.split('/').at(-1), workflowEvents })
       return
     }
     if (request.method === 'GET' && request.url?.startsWith('/api/agent/preview')) {
@@ -217,6 +292,7 @@ export function createServer(options = {}) {
   server.sessionStore = sessionStore
   server.sessions = sessions
   server.workspaceRegistry = workspaceRegistry
+  server.workflowEvents = workflowEvents
   return server
 }
 
@@ -283,7 +359,7 @@ async function handleSessions(request, response, options) {
       workspaceRoot: workspace?.root || query.searchParams.get('workspaceRoot') || '',
       resumePath: workspace?.resumePath || query.searchParams.get('resumePath') || '',
     })
-    sendJson(response, 200, { ok: true, sessions })
+    sendJson(response, 200, { ok: true, sessions: sessions.map((session) => publicSessionSummary(options.sessionStore, session, false)) })
   } catch (error) {
     sendJson(response, 500, { ok: false, errorCode: String(error?.code || 'SESSIONS_LIST_FAILED'), errorMessage: String(error?.message || error) })
   }
@@ -298,10 +374,9 @@ async function handleSession(request, response, options) {
     const draft = session.taskRef.current?.context?.contentVersion && session.taskRef.draftRelativePath
       ? await readResumeDraft(session.workspaceRoot, session.taskRef.current.context.taskId, session.resumePath).catch(() => null)
       : null
-    const sessionSummary = options.sessionStore.summary(session, true)
-    delete sessionSummary.workspaceRoot
+    const sessionSummary = publicSessionSummary(options.sessionStore, session, true)
     const workspace = await options.workspaceRegistry.metadata(session.workspaceId).catch(() => ({ id: session.workspaceId, name: path.basename(session.workspaceRoot), resumeName: path.basename(session.resumePath) }))
-    sendJson(response, 200, { ok: true, session: sessionSummary, workspace, state: session.taskRef.current?.state || session.status, context: contextFields(session.taskRef.current?.context), source: { path: source.relativePath, content: source.content }, draft: draft ? { path: draft.draftRelativePath, content: draft.content } : null })
+    sendJson(response, 200, { ok: true, session: sessionSummary, workspace, state: session.taskRef.current?.state || session.status, context: contextFields(session.taskRef.current?.context), presentation: session.taskRef.presentation || null, source: { path: source.relativePath, content: source.content }, draft: draft ? { path: draft.draftRelativePath, content: draft.content } : null })
   } catch (error) {
     const code = String(error?.code || 'SESSION_READ_FAILED')
     sendJson(response, code === 'SESSION_NOT_FOUND' ? 404 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
@@ -316,6 +391,25 @@ async function handlePreviews(request, response, options) {
     sendJson(response, 200, { ok: true, previews: result.previews, truncated: result.truncated })
   } catch (error) {
     sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'PREVIEWS_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleAgentEvents(request, response, options) {
+  try {
+    const sessionId = new URL(request.url, 'http://127.0.0.1').searchParams.get('sessionId') || ''
+    const session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    response.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-store',
+      'connection': 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    response.write(`event: ready\ndata: ${JSON.stringify({ sessionId, state: session.taskRef.current?.state || session.status })}\n\n`)
+    options.workflowEvents.subscribe(sessionId, response)
+  } catch (error) {
+    const code = String(error?.code || 'AGENT_EVENTS_FAILED')
+    sendJson(response, code === 'SESSION_NOT_FOUND' ? 404 : 400, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
   }
 }
 
@@ -339,6 +433,55 @@ async function handleTemplate(request, response, options) {
     sendJson(response, 200, { ok: true, workspaceId: workspace.id, template })
   } catch (error) {
     sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'TEMPLATE_READ_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+/**
+ * Render a read-only gallery thumbnail from the current isolated draft.
+ * It intentionally does not mutate task context: choosing a template remains
+ * an explicit session action, while the gallery can show the real renderer.
+ */
+async function handleTemplatePreview(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1').searchParams
+    const sessionId = String(query.get('sessionId') || '').trim()
+    const templateId = String(query.get('templateId') || '').trim()
+    const session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    const current = session.taskRef.current
+    const contentVersion = current?.context?.contentVersion || session.sourceHash
+    let draft = null
+    if (current?.context?.contentVersion && session.taskRef.draftRelativePath) {
+      draft = await readResumeDraft(session.workspaceRoot, current.context.taskId, session.resumePath).catch(() => null)
+    }
+    const source = draft || await readWorkspaceText(session.workspaceRoot, session.resumePath)
+    if (!contentVersion || !source?.content) throw Object.assign(new Error('current resume draft was not found'), { code: 'DRAFT_NOT_FOUND' })
+    const template = await loadWorkspaceTemplate(session.workspaceRoot, templateId)
+    if (!template?.id) throw Object.assign(new Error(`template is not available in CVAgent: ${templateId}`), { code: 'TEMPLATE_NOT_FOUND' })
+    const renderId = `thumb_${crypto.randomUUID()}`
+    const rendered = await renderResumeDraft({
+      renderId,
+      workspaceRoot: session.workspaceRoot,
+      resumePath: session.resumePath,
+      taskId: current?.context?.taskId || `template_${sessionId}`,
+      contentVersion,
+      content: source.content,
+      templateId: template.id,
+      templateRevision: `${template.id}@${Number(template.metadata?.revision || 1)}`,
+    })
+    const html = await fs.readFile(rendered.absolutePath, 'utf8')
+    await options.serverLogger.info('template_preview_rendered', {
+      sessionId,
+      templateId: template.id,
+      renderId,
+      bytes: rendered.bytes,
+    })
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'" })
+    response.end(html)
+  } catch (error) {
+    const code = String(error?.code || 'TEMPLATE_PREVIEW_FAILED')
+    const status = new Set(['SESSION_NOT_FOUND', 'DRAFT_NOT_FOUND', 'TEMPLATE_NOT_FOUND']).has(code) ? 404 : 400
+    sendJson(response, status, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
   }
 }
 
@@ -409,11 +552,11 @@ async function handleAgentBootstrap(request, response, options) {
     const draft = await writeResumeDraft(workspace.root, task.context.taskId, resumePath, source.content)
     session.taskRef.current = recordDraftWrite(session.taskRef.current, { workspaceId: workspace.id, resumeId: resumePath, contentVersion: draft.contentVersion })
     session.taskRef.draftRelativePath = draft.draftRelativePath
-    const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+    const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event) })
     const rendered = await handlers.resumeRender()
     await runLogger.info('session_bootstrapped', { workspaceRoot: workspace.root, resumePath, templateId: template.id, renderId: rendered.renderId })
     const current = session.taskRef.current
-    sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, targetPages: current.targetPages, context: contextFields(current.context), draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content }, messages: options.sessionStore.summary(session, true).messages })
+    sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, targetPages: current.targetPages, context: contextFields(current.context), presentation: session.taskRef.presentation || null, draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content }, messages: options.sessionStore.summary(session, true).messages })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_BOOTSTRAP_FAILED'), errorMessage: String(error?.message || error) }
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'TEMPLATE_NOT_FOUND'])
@@ -468,7 +611,7 @@ async function handleDomainAction(request, response, options) {
     if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
     return await withSessionLock(session, async () => {
       const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
-      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event) })
       const input = options.action === 'template'
         ? parseJsonBody(templateSelectSchema, body, 'DOMAIN_INPUT_INVALID')
         : options.action === 'template-copy'
@@ -506,7 +649,7 @@ async function handleMeasurement(request, response, options) {
     return await withSessionLock(session, async () => {
       if (String(input.renderId) !== String(session.taskRef.current.context.renderId || '')) throw Object.assign(new Error('measurement renderId is stale'), { code: 'MEASUREMENT_STALE' })
       const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
-      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event) })
       const measurement = await handlers.resumeMeasure(input)
       const verification = await handlers.resumeVerify()
       sendJson(response, 200, { ok: true, sessionId, measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) })
@@ -539,7 +682,7 @@ async function handleAgentContinue(request, response, options) {
       if (task.state !== 'needs_revision') throw Object.assign(new Error(`agent continuation requires needs_revision, received ${task.state}`), { code: 'CONTINUATION_NOT_ALLOWED' })
       const blockers = task.blockers.length ? `\n当前阻断项：\n- ${task.blockers.join('\n- ')}` : ''
       const message = String(body.message || `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据最终验收结果继续修订当前简历，重新检查、渲染，并等待下一次真实测量。${blockers}`).trim()
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'measurement_continuation' })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event) })
       task = turn.task
       sendJson(response, 200, { ok: true, continued: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
     })
@@ -584,7 +727,7 @@ async function handleAgentRun(request, response, options) {
       options.sessions.set(sessionId, session)
     }
     return await withSessionLock(session, async () => {
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'user_message' })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event) })
       task = turn.task
       sendJson(response, 200, { ok: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
     })

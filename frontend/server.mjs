@@ -36,9 +36,40 @@ async function proxyApi(request, response, url) {
     const contentType = upstream.headers.get('content-type')
     if (contentType) responseHeaders['content-type'] = contentType
     response.writeHead(upstream.status, responseHeaders)
+    if (contentType?.includes('text/event-stream') && upstream.body) {
+      const reader = upstream.body.getReader()
+      let clientClosed = false
+      let streamFinished = false
+      const cancelStream = () => {
+        if (streamFinished) return
+        clientClosed = true
+        void reader.cancel().catch(() => {})
+      }
+      request.once('aborted', cancelStream)
+      response.once('close', cancelStream)
+      try {
+        while (true) {
+          const next = await reader.read()
+          if (next.done) break
+          if (clientClosed || response.destroyed || response.writableEnded) break
+          response.write(Buffer.from(next.value))
+        }
+      } catch (error) {
+        if (!clientClosed && !response.destroyed && !response.writableEnded) throw error
+      } finally {
+        streamFinished = true
+        if (!response.destroyed && !response.writableEnded) response.end()
+        proxyLog('info', 'api_proxy_stream_finished', { requestId, method: request.method, route: url.pathname, statusCode: upstream.status, durationMs: Date.now() - startedAt })
+      }
+      return
+    }
     response.end(Buffer.from(await upstream.arrayBuffer()))
     proxyLog('info', 'api_proxy_finished', { requestId, method: request.method, route: url.pathname, statusCode: upstream.status, durationMs: Date.now() - startedAt })
   } catch (error) {
+    if (response.headersSent || response.destroyed || response.writableEnded || request.aborted) {
+      proxyLog('info', 'api_proxy_client_closed', { requestId, method: request.method, route: url.pathname, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'CLIENT_CLOSED') })
+      return
+    }
     response.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-cvagent-request-id': requestId })
     response.end(JSON.stringify({ ok: false, error: 'api_unavailable', requestId }))
     proxyLog('error', 'api_proxy_failed', { requestId, method: request.method, route: url.pathname, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'API_PROXY_FAILED'), errorMessage: String(error?.message || error).slice(0, 500) })

@@ -5,7 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { createLogger } from '../src/core/logger.js'
 import { createResumeTools } from '../src/agent/resume-tools.js'
-import { confirmResumeTask, createResumeTask, prepareResumeTask, recordDraftWrite, recordMeasurement, recordRender, saveResumeTask, TASK_STATES, verifyResumeTask } from '../src/core/workflow.js'
+import { confirmResumeTask, createResumeTask, prepareResumeTask, recordDraftWrite, recordMeasurement, recordRender, recordTemplateChange, saveResumeTask, TASK_STATES, verifyResumeTask } from '../src/core/workflow.js'
 import { runResumeTool } from '../src/core/tool-runner.js'
 import { createServer } from '../src/server.js'
 import { ensureWorkspace, listWorkspacePreviews } from '../src/core/workspace.js'
@@ -95,6 +95,14 @@ test('task context preserves the selected template identity from the first rende
   const current = createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume-1', templateId: 'business-ledger-plus', templateRevision: 'business-ledger-plus@1' })
   assert.equal(current.context.templateId, 'business-ledger-plus')
   assert.equal(current.context.templateRevision, 'business-ledger-plus@1')
+})
+
+test('explicit template selection can replace the previous template identity', () => {
+  const current = createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume-1', templateId: 'campus-standard', templateRevision: 'campus-standard@1' })
+  const next = recordTemplateChange(current, { workspaceId: 'workspace-1', resumeId: 'resume-1', templateId: 'business-ledger-plus', templateRevision: 'business-ledger-plus@1' })
+  assert.equal(next.context.templateId, 'business-ledger-plus')
+  assert.equal(next.context.templateRevision, 'business-ledger-plus@1')
+  assert.equal(next.context.renderId, null)
 })
 
 test('workspace preview listing is deterministic and excludes isolated CVAgent artifacts', async () => {
@@ -424,8 +432,14 @@ test('bootstrap creates an isolated preview session without invoking an agent', 
     assert.match(await preview.text(), /data-product="CVAgent"/)
     const listed = await (await fetch(`http://127.0.0.1:${address.port}/api/sessions?workspaceRoot=${encodeURIComponent(workspaceRoot)}`)).json()
     assert.deepEqual(listed.sessions.map((item) => item.sessionId), [body.sessionId])
+    assert.equal(Object.hasOwn(listed.sessions[0], 'workspaceRoot'), false)
+    assert.equal(Object.hasOwn(listed.sessions[0], 'sourceHash'), false)
+    assert.equal(Object.hasOwn(listed.sessions[0].taskRef, 'renderAbsolutePath'), false)
     const persisted = await (await fetch(`http://127.0.0.1:${address.port}/api/session?sessionId=${encodeURIComponent(body.sessionId)}`)).json()
     assert.equal(persisted.session.taskRef.current.state, TASK_STATES.RENDERED)
+    assert.equal(Object.hasOwn(persisted.session, 'workspaceRoot'), false)
+    assert.equal(Object.hasOwn(persisted.session, 'sourceHash'), false)
+    assert.equal(Object.hasOwn(persisted.session.taskRef, 'renderAbsolutePath'), false)
     await closeServer(server)
     server = createServer({ logger: createLogger({ directory: path.join(workspaceRoot, 'test-logs-2'), component: 'bootstrap-restart-test' }), sessionDirectory })
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -436,6 +450,90 @@ test('bootstrap creates an isolated preview session without invoking an agent', 
     assert.equal(await fs.readFile(path.join(workspaceRoot, 'resume.md'), 'utf8'), '# Bootstrap Resume\n\nExisting evidence\n')
   } finally {
     if (server.listening) await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
+test('agent event stream delivers correlated run and tool progress to the frontend', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-events-'))
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Event Resume\n\nExisting evidence\n', 'utf8')
+  const server = createServer({
+    logger: createLogger({ directory: path.join(workspaceRoot, 'logs'), component: 'events-test' }),
+    sessionDirectory: path.join(workspaceRoot, 'sessions'),
+    agentFactory: async ({ tools }) => ({
+      invoke: async () => {
+        await tools.find((tool) => tool.name === 'resume_read').invoke({ includeContent: false })
+        return { messages: [{ role: 'assistant', content: 'Read the current draft.' }] }
+      },
+    }),
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  let eventReader = null
+  try {
+    const address = server.address()
+    const base = `http://127.0.0.1:${address.port}`
+    const bootstrap = await (await fetch(`${base}/api/agent/bootstrap`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceRoot, resumePath: 'resume.md', targetPages: 1, templateId: 'campus-standard' }) })).json()
+    const eventsResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(bootstrap.sessionId)}`)
+    assert.equal(eventsResponse.status, 200)
+    eventReader = eventsResponse.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const readEvent = async (eventName) => {
+      while (!buffer.includes(`event: ${eventName}`)) {
+        const next = await eventReader.read()
+        assert.equal(next.done, false)
+        buffer += decoder.decode(next.value, { stream: true })
+      }
+      const marker = buffer.indexOf(`event: ${eventName}`)
+      const end = buffer.indexOf('\n\n', marker)
+      if (end < 0) return readEvent(eventName)
+      const eventText = buffer.slice(marker, end)
+      buffer = buffer.slice(end + 2)
+      const data = eventText.split('\n').find((line) => line.startsWith('data: '))
+      return data ? JSON.parse(data.slice(6)) : null
+    }
+    const ready = await readEvent('ready')
+    assert.equal(ready.sessionId, bootstrap.sessionId)
+    const runPromise = fetch(`${base}/api/agent/run`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: bootstrap.sessionId, message: 'Read the current resume', workspaceRoot, resumePath: 'resume.md' }) })
+    const started = await readEvent('workflow')
+    const toolStarted = await readEvent('workflow')
+    const toolFinished = await readEvent('workflow')
+    const finished = await readEvent('workflow')
+    assert.equal(started.event, 'agent_run_started')
+    assert.equal(toolStarted.event, 'tool_call_started')
+    assert.equal(toolStarted.toolName, 'resume_read')
+    assert.equal(toolFinished.event, 'tool_call_succeeded')
+    assert.equal(toolFinished.sessionId, bootstrap.sessionId)
+    assert.equal(finished.event, 'agent_run_finished')
+    assert.equal(finished.outcome, 'success')
+    assert.equal((await runPromise).status, 200)
+  } finally {
+    await eventReader?.cancel().catch(() => {})
+    await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
+test('template gallery preview renders the requested real template without changing session selection', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-template-preview-'))
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Template Preview\n\n## Experience\n\n- Built a real gallery preview\n', 'utf8')
+  const server = createServer({ logger: createLogger({ directory: path.join(workspaceRoot, 'logs'), component: 'template-preview-test' }), sessionDirectory: path.join(workspaceRoot, 'sessions') })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    const base = `http://127.0.0.1:${address.port}`
+    const bootstrap = await (await fetch(`${base}/api/agent/bootstrap`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceRoot, resumePath: 'resume.md', targetPages: 1, templateId: 'campus-standard' }) })).json()
+    const before = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(bootstrap.sessionId)}`)).json()
+    const preview = await fetch(`${base}/api/template-preview?sessionId=${encodeURIComponent(bootstrap.sessionId)}&templateId=business-ledger-plus`)
+    assert.equal(preview.status, 200)
+    const html = await preview.text()
+    assert.match(html, /data-product="CVAgent"/)
+    assert.match(html, /data-template-id="business-ledger-plus"/)
+    const after = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(bootstrap.sessionId)}`)).json()
+    assert.equal(after.context.templateId, before.context.templateId)
+    assert.equal(after.context.renderId, before.context.renderId)
+  } finally {
+    await closeServer(server)
     await fs.rm(workspaceRoot, { recursive: true, force: true })
   }
 })
@@ -475,6 +573,8 @@ test('workspace selection imports a managed workspace and drives the agent by op
     const session = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(bootstrap.sessionId)}`)).json()
     assert.equal(session.workspace.id, imported.id)
     assert.equal(Object.hasOwn(session.session, 'workspaceRoot'), false)
+    assert.equal(Object.hasOwn(session.session, 'sourceHash'), false)
+    assert.equal(Object.hasOwn(session.session.taskRef, 'renderAbsolutePath'), false)
   } finally {
     await closeServer(server)
     await fs.rm(testRoot, { recursive: true, force: true })

@@ -77,6 +77,7 @@
 
   function inlineMarkdown(value) {
     let html = escapeHtml(value)
+    html = html.replace(/\\\|/g, '|')
     html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>')
     html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     html = html.replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
@@ -87,6 +88,48 @@
       return `${prefix}<a href="${escapeHtml(safe)}" target="_blank" rel="noreferrer">${escapeHtml(safe)}</a>${escapeHtml(trailing)}`
     })
     return html
+  }
+
+  function splitTableRow(line) {
+    let value = String(line || '').trim()
+    if (value.startsWith('|')) value = value.slice(1)
+    if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1)
+    const cells = []
+    let cell = ''
+    let escaped = false
+    for (const character of value) {
+      if (character === '|' && !escaped) {
+        cells.push(cell.trim())
+        cell = ''
+        continue
+      }
+      cell += character
+      escaped = character === '\\' && !escaped
+      if (character !== '\\') escaped = false
+    }
+    cells.push(cell.trim())
+    return cells
+  }
+
+  function isTableSeparator(line) {
+    const cells = splitTableRow(line)
+    return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+  }
+
+  function renderTable(header, separator, bodyRows) {
+    const rows = [header, ...bodyRows]
+    const columnCount = Math.max(...rows.map((row) => row.length), separator.length)
+    const alignments = separator.map((cell) => {
+      if (/^:-{2,}:$/.test(cell)) return 'center'
+      if (/^-{3,}:$/.test(cell)) return 'right'
+      return 'left'
+    })
+    const renderCells = (cells, tag) => Array.from({ length: columnCount }, (_, index) => {
+      const align = alignments[index] || 'left'
+      return `<${tag} class="markdown-table-${align}">${inlineMarkdown(cells[index] || '')}</${tag}>`
+    }).join('')
+    const body = bodyRows.map((row) => `<tr>${renderCells(row, 'td')}</tr>`).join('')
+    return `<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${renderCells(header, 'th')}</tr></thead>${body ? `<tbody>${body}</tbody>` : ''}</table></div>`
   }
 
   function renderMarkdown(source) {
@@ -109,7 +152,8 @@
       inCode = false
     }
 
-    for (const line of lines) {
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]
       if (/^\s*```/.test(line)) {
         closeList()
         if (inCode) closeCode()
@@ -118,6 +162,19 @@
       }
       if (inCode) {
         codeLines.push(line)
+        continue
+      }
+      if (line.includes('|') && lines[lineIndex + 1] && isTableSeparator(lines[lineIndex + 1])) {
+        closeList()
+        const header = splitTableRow(line)
+        const separator = splitTableRow(lines[lineIndex + 1])
+        const bodyRows = []
+        lineIndex += 1
+        while (lines[lineIndex + 1] && lines[lineIndex + 1].trim() && !/^\s*```/.test(lines[lineIndex + 1]) && !isTableSeparator(lines[lineIndex + 1]) && String(lines[lineIndex + 1]).includes('|')) {
+          lineIndex += 1
+          bodyRows.push(splitTableRow(lines[lineIndex]))
+        }
+        output.push(renderTable(header, separator, bodyRows))
         continue
       }
       if (!line.trim()) {

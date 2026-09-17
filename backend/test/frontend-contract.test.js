@@ -19,6 +19,12 @@ test('frontend moves the Agent below the workbench instead of covering A4 on nar
   assert.match(css, /@media \(max-width:700px\) \{[\s\S]*?\.app-shell\.assistant-open \{ display:block; height:auto;/)
 })
 
+test('frontend keeps the measured A4 fit when Agent is open on desktop widths', async () => {
+  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap,[\s\S]*?width:var\(--preview-width,429px\); height:var\(--preview-height,607px\); transform:none;/)
+  assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap iframe,[\s\S]*?transform:scale\(var\(--preview-scale,.54\)\);/)
+})
+
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {
   const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
   const proxy = await fs.readFile(path.join(frontendRoot, 'server.mjs'), 'utf8')

@@ -207,6 +207,12 @@ body { letter-spacing:-.005em; }
 .direct-preview-frame-wrap,.full-real-frame-wrap { width:var(--preview-width,429px); height:var(--preview-height,607px); transform:none; margin-bottom:0; }
 .direct-preview-frame-wrap iframe,.full-real-frame { width:794px; height:1123px; transform:scale(var(--preview-scale,.54)); transform-origin:top left; }
 
+/* Agent-open breakpoints previously overrode the measured A4 fit with fixed values. */
+.app-shell.assistant-open .direct-preview-frame-wrap,
+.app-shell.assistant-open .full-real-frame-wrap { width:var(--preview-width,429px); height:var(--preview-height,607px); transform:none; margin-bottom:0; }
+.app-shell.assistant-open .direct-preview-frame-wrap iframe,
+.app-shell.assistant-open .full-real-frame { width:794px; height:1123px; transform:scale(var(--preview-scale,.54)); transform-origin:top left; }
+
 /* A narrow Agent view must consume layout space instead of covering the workbench. */
 @media (max-width:1100px) {
   .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr); grid-template-rows:auto auto; height:100dvh; overflow:auto; align-content:start; }

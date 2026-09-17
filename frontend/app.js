@@ -30,6 +30,9 @@ const liveState = {
   measurementPending: false,
   measuredRenderKey: '',
   continuationKey: '',
+  agentEvents: [],
+  agentRunActive: false,
+  agentRunError: '',
   loading: false,
 }
 const api = window.cvAgentApi
@@ -46,20 +49,6 @@ function templatePreviewUrl(templateId) {
   return `/api/template-preview?sessionId=${encodeURIComponent(activeSessionId)}&templateId=${encodeURIComponent(templateId)}&t=${encodeURIComponent(liveState.renderId || 'draft')}`
 }
 
-const toolLabels = {
-  workspace_info: '读取工作区',
-  resume_prepare: '准备简历任务',
-  resume_read: '读取简历',
-  resume_check: '检查内容',
-  template_list: '读取模板库',
-  template_select: '切换模板',
-  presentation_update: '调整版式',
-  resume_write: '写入隔离草稿',
-  resume_render: '重新渲染',
-  resume_metrics: '接收 A4 测量',
-  resume_finalize: '完成验收',
-}
-
 function connectWorkflowEvents() {
   if (!liveState.sessionId || typeof window.EventSource !== 'function') return
   if (workflowEventSessionId === liveState.sessionId && workflowEventSource) return
@@ -69,23 +58,14 @@ function connectWorkflowEvents() {
   workflowEventSource.addEventListener('workflow', (event) => {
     let payload
     try { payload = JSON.parse(event.data) } catch { return }
-    const progress = $('.turn-progress.is-running')
-    if (!progress || payload.sessionId !== liveState.sessionId) return
-    const label = toolLabels[payload.toolName] || payload.toolName || 'Agent 处理'
-    const copy = progress.querySelector('span')
-    const timing = progress.querySelector('time')
-    if (payload.event === 'tool_call_started') {
-      if (copy) copy.textContent = label
-      if (timing) timing.textContent = '进行中'
-    } else if (payload.event === 'tool_call_succeeded') {
-      if (copy) copy.textContent = `${label}已完成`
-      if (timing) timing.textContent = '完成'
-    } else if (payload.event === 'tool_call_failed') {
-      if (copy) copy.textContent = `${label}失败`
-      if (timing) timing.textContent = '失败'
-    } else if (payload.event === 'agent_run_started') {
-      if (copy) copy.textContent = 'Agent 正在处理'
+    if (payload.sessionId !== liveState.sessionId) return
+    liveState.agentEvents = [...liveState.agentEvents, payload].slice(-240)
+    if (payload.event === 'agent_run_started') {
+      liveState.agentRunActive = true
+      liveState.agentRunError = ''
     }
+    if (payload.event === 'agent_run_finished') liveState.agentRunActive = false
+    renderAgentChat({ scrollToBottom: true })
   })
 }
 
@@ -182,7 +162,7 @@ async function continueAgentAfterMeasurement(renderKey, blockers) {
     syncPreviewFrames()
     updateHeader()
     const assistantMessage = body.assistantText || 'Agent 已根据真实排版结果继续处理。'
-    liveState.messages.push({ role: 'assistant', content: assistantMessage })
+    liveState.agentRunActive = false
     appendAgentResponse(assistantMessage)
   } catch (error) {
     liveState.continuationKey = ''
@@ -214,6 +194,8 @@ function updateConnectionStatus() {
     if (label) label.textContent = '未选择工作区'
     if (connection) connection.textContent = '等待选择工作区'
   }
+  const context = $('.assistant-context span')
+  if (context) context.textContent = liveState.workspace ? `${liveState.workspace.name || '当前工作区'} · ${liveState.templateName || liveState.templateId}` : '选择工作区后开始对话'
 }
 
 function renderWorkspaceOptions(workspaces) {
@@ -319,6 +301,9 @@ async function restoreSession(sessionId) {
     liveState.sourceContent = body.source?.content || liveState.sourceContent
     liveState.draftContent = body.draft?.content || liveState.sourceContent
     liveState.messages = Array.isArray(session.messages) ? session.messages : []
+    liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
+    liveState.agentRunActive = false
+    liveState.agentRunError = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
     liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
@@ -345,6 +330,9 @@ async function bootstrapWorkspace(workspace) {
   liveState.workspace = workspace
   liveState.workspaceId = workspace.id
   liveState.sessionId = ''
+  liveState.agentEvents = []
+  liveState.agentRunActive = false
+  liveState.agentRunError = ''
   activeSessionId = ''
   updateConnectionStatus()
   showToast('正在加载工作区…')
@@ -357,6 +345,9 @@ async function bootstrapWorkspace(workspace) {
     liveState.sourceContent = body.source?.content || ''
     liveState.draftContent = liveState.sourceContent
     liveState.messages = Array.isArray(body.messages) ? body.messages : []
+    liveState.agentEvents = Array.isArray(body.workflowEvents) ? body.workflowEvents : []
+    liveState.agentRunActive = false
+    liveState.agentRunError = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || liveState.templateId
     liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateName
@@ -376,6 +367,9 @@ async function bootstrapWorkspace(workspace) {
     liveState.workspace = null
     liveState.workspaceId = ''
     liveState.sessionId = ''
+    liveState.agentEvents = []
+    liveState.agentRunActive = false
+    liveState.agentRunError = ''
     activeSessionId = ''
     updateConnectionStatus()
     showToast(`工作区加载失败：${errorText(error)}`)
@@ -627,10 +621,35 @@ function escapeHtml(value) {
 }
 
 function renderChatRefined() {
-  const visibleMessages = (Array.isArray(liveState.messages) ? liveState.messages : []).filter((message) => ['user', 'assistant'].includes(message?.role)).map((message) => ({ role: message.role, content: chatMessageText(message) })).filter((message) => message.content)
-  const messages = visibleMessages.map((message) => `<article class="message ${message.role === 'user' ? 'user-message' : 'agent-message'}" aria-label="${message.role === 'user' ? '用户消息' : 'Agent 消息'}"><div class="message-body"><div class="message-bubble">${escapeHtml(message.content)}</div></div></article>`).join('')
-  const empty = visibleMessages.length ? '' : '<div class="chat-empty">描述你希望如何修改当前简历，Agent 会先读取当前草稿，再执行检查、渲染和真实 A4 验收。</div>'
-  return `<div class="chat-layout"><div class="chat-stream">${empty}${messages}</div><form class="composer" id="composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送 <button type="submit">发送 ↗</button></span></div></form></div>`
+  const timeline = window.cvAgentChat.renderTimeline({
+    messages: (Array.isArray(liveState.messages) ? liveState.messages : []).map((message) => ({ ...message, content: chatMessageText(message) })),
+    events: liveState.agentEvents,
+    sessionReady: Boolean(liveState.sessionId),
+    activeRun: liveState.agentRunActive,
+    error: liveState.agentRunError,
+  })
+  return `<div class="chat-layout"><div class="chat-stream" data-testid="agent-timeline" role="log" aria-live="polite">${timeline}</div><form class="composer" id="composer" data-testid="agent-composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送</span><button type="submit">发送</button></div></form></div>`
+}
+
+function renderAgentChat({ scrollToBottom = false } = {}) {
+  const oldInput = $('#messageInput')
+  const previousValue = oldInput?.value || ''
+  const shouldRestoreFocus = document.activeElement === oldInput
+  const previousStream = $('.chat-stream')
+  const previousScrollTop = previousStream?.scrollTop || 0
+  const content = $('#assistantContent')
+  if (!content) return
+  content.innerHTML = renderChatRefined()
+  connectWorkflowEvents()
+  const input = $('#messageInput')
+  if (input) {
+    input.value = previousValue
+    if (shouldRestoreFocus) input.focus()
+  }
+  bindChat()
+  const stream = $('.chat-stream')
+  if (!stream) return
+  stream.scrollTop = scrollToBottom ? stream.scrollHeight : previousScrollTop
 }
 
 function renderEditor() {
@@ -713,9 +732,8 @@ function renderWorkbench() {
   for (const [id, key] of [['tuningFontSize', 'fontSize'], ['tuningLineHeight', 'lineHeight'], ['tuningSectionGap', 'sectionGap'], ['tuningPageMargin', 'pageMargin']]) {
     if (tuningLayout[key] !== undefined && $(`#${id}`)) $(`#${id}`).value = tuningLayout[key]
   }
-  $('#assistantContent').innerHTML = renderChatRefined()
   $('#editorApply').addEventListener('click', () => { void saveDraftAndRender($('#resumeEditor').value) })
-  bindChat()
+  renderAgentChat()
   $('[data-open-full-preview]').addEventListener('click', () => renderRoute('preview'))
   $('[data-toggle-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = !$('#presentationPanel').hidden })
   $('[data-close-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = true })
@@ -924,15 +942,9 @@ async function renderVersions() {
 }
 
 function appendAgentResponse(text) {
-  const stream = $('.chat-stream')
-  if (!stream) return
-  const response = document.createElement('article')
-  response.className = 'message agent-message'
-  response.setAttribute('aria-label', 'Agent 消息')
-  response.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
-  response.querySelector('.message-bubble').textContent = text
-  stream.append(response)
-  response.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  if (text) liveState.messages.push({ role: 'assistant', content: text })
+  liveState.agentRunActive = false
+  renderAgentChat({ scrollToBottom: true })
 }
 
 async function saveCurrentVersion() {
@@ -967,8 +979,10 @@ async function saveCurrentVersion() {
 }
 
 function bindChat() {
-  connectWorkflowEvents()
-  $('#composer').addEventListener('submit', (event) => {
+  const composer = $('#composer')
+  if (!composer || composer.dataset.bound === 'true') return
+  composer.dataset.bound = 'true'
+  composer.addEventListener('submit', (event) => {
     event.preventDefault()
     const input = $('#messageInput')
     const value = input.value.trim()
@@ -977,24 +991,13 @@ function bindChat() {
       showToast('请先选择工作区并加载简历')
       return
     }
-    const article = document.createElement('article')
-    article.className = 'message user-message'
-    article.setAttribute('aria-label', '用户消息')
-    article.innerHTML = '<div class="message-body"><div class="message-bubble"></div></div>'
-    article.querySelector('.message-bubble').textContent = value
-    const stream = $('.chat-stream')
     liveState.messages.push({ role: 'user', content: value })
-    stream.append(article)
     input.value = ''
-    article.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    liveState.agentRunActive = true
+    liveState.agentRunError = ''
+    renderAgentChat({ scrollToBottom: true })
     updateSessionStatus('Agent 处理中')
     showToast('已发送，Agent 正在处理当前会话')
-    const progress = document.createElement('div')
-    progress.className = 'turn-progress is-running'
-    progress.setAttribute('role', 'status')
-    progress.innerHTML = '<i aria-hidden="true"></i><span>正在更新简历草稿</span><time>进行中</time>'
-    stream.append(progress)
-    progress.scrollIntoView({ behavior: 'smooth', block: 'end' })
     void api.post('/api/agent/run', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
       .then(({ body }) => {
         liveState.workflowState = body.state || liveState.workflowState
@@ -1006,18 +1009,19 @@ function bindChat() {
           liveState.continuationKey = ''
         }
         if (body.draft?.contentVersion) liveState.draftContent = $('#resumeEditor')?.value || liveState.draftContent
-        progress.classList.remove('is-running')
-        progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 已完成本轮处理</span><time>完成</time>'
         const assistantMessage = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
         liveState.messages.push({ role: 'assistant', content: assistantMessage })
-        appendAgentResponse(assistantMessage)
+        liveState.agentRunActive = false
+        liveState.agentRunError = ''
+        renderAgentChat({ scrollToBottom: true })
         syncPreviewFrames()
         updateHeader()
         void loadSessionsForWorkspace()
       })
       .catch((error) => {
-        progress.classList.remove('is-running')
-        progress.innerHTML = '<i aria-hidden="true"></i><span>Agent 执行失败</span><time>失败</time>'
+        liveState.agentRunActive = false
+        liveState.agentRunError = errorText(error)
+        renderAgentChat({ scrollToBottom: true })
         updateSessionStatus('Agent 执行失败')
         showToast(`Agent 执行失败：${errorText(error)}`)
       })

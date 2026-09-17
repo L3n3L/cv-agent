@@ -1,0 +1,44 @@
+{
+  "empty": {
+    "sessionReady": true,
+    "messages": [],
+    "events": []
+  },
+  "running": {
+    "sessionReady": true,
+    "messages": [
+      { "role": "user", "content": "把项目经历改成 AI 产品经理投递版，控制在一页。" }
+    ],
+    "events": [
+      { "event": "agent_run_started", "runId": "fixture-run", "timestamp": "2026-09-17T12:00:00.000Z" },
+      { "event": "tool_call_started", "runId": "fixture-run", "toolName": "resume_read", "timestamp": "2026-09-17T12:00:01.000Z" },
+      { "event": "tool_call_succeeded", "runId": "fixture-run", "toolName": "resume_read", "durationMs": 184, "timestamp": "2026-09-17T12:00:01.184Z" },
+      { "event": "tool_call_started", "runId": "fixture-run", "toolName": "resume_check", "timestamp": "2026-09-17T12:00:02.000Z" }
+    ]
+  },
+  "blocked": {
+    "sessionReady": true,
+    "messages": [
+      { "role": "user", "content": "帮我把这份简历压到一页。" },
+      { "role": "assistant", "content": "已完成内容检查，但真实 A4 测量显示第二页仍有溢出，需要继续调整版式或确认删减内容。" }
+    ],
+    "events": [
+      { "event": "agent_run_started", "runId": "fixture-run", "timestamp": "2026-09-17T12:00:00.000Z" },
+      { "event": "tool_call_succeeded", "runId": "fixture-run", "toolName": "resume_render", "durationMs": 426, "timestamp": "2026-09-17T12:00:03.000Z" },
+      { "event": "verification_blocked", "runId": "fixture-run", "errorCode": "PAGE_OVERFLOW", "timestamp": "2026-09-17T12:00:04.000Z" }
+    ]
+  },
+  "accepted": {
+    "sessionReady": true,
+    "messages": [
+      { "role": "user", "content": "生成一份适合产品实习投递的一页简历。" },
+      { "role": "assistant", "content": "简历已按目标岗位重写，并完成模板、版式与真实 A4 验收。\n\n- 当前模板：校招标准\n- 页数：1 页\n- 状态：可继续确认并保存版本" }
+    ],
+    "events": [
+      { "event": "agent_run_started", "runId": "fixture-run", "timestamp": "2026-09-17T12:00:00.000Z" },
+      { "event": "tool_call_succeeded", "runId": "fixture-run", "toolName": "resume_finalize", "durationMs": 932, "timestamp": "2026-09-17T12:00:05.000Z" },
+      { "event": "verification_passed", "runId": "fixture-run", "timestamp": "2026-09-17T12:00:06.000Z" },
+      { "event": "agent_run_finished", "runId": "fixture-run", "timestamp": "2026-09-17T12:00:07.000Z" }
+    ]
+  }
+}

@@ -8,6 +8,7 @@ const SNAPSHOT_NAME = 'session.json'
 const MESSAGES_NAME = 'messages.ndjson'
 const EVENTS_NAME = 'events.ndjson'
 const SCHEMA_VERSION = 1
+const MAX_WORKFLOW_EVENTS = 240
 
 function assertSessionId(sessionId) {
   const value = String(sessionId || '').trim()
@@ -29,6 +30,20 @@ function safeMessages(messages) {
   return Array.isArray(messages) ? messages.map(safeMessage) : []
 }
 
+function safeWorkflowEvent(event) {
+  if (!event || typeof event !== 'object') return null
+  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'mode', 'outcome', 'durationMs', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state']
+  const value = {}
+  for (const key of allowed) {
+    if (event[key] !== undefined && event[key] !== null) value[key] = event[key]
+  }
+  return value.event ? value : null
+}
+
+function safeWorkflowEvents(events) {
+  return (Array.isArray(events) ? events : []).map(safeWorkflowEvent).filter(Boolean).slice(-MAX_WORKFLOW_EVENTS)
+}
+
 function sessionSnapshot(session) {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -44,6 +59,7 @@ function sessionSnapshot(session) {
     status: session.status || 'idle',
     runState: session.runState || 'idle',
     lastError: session.lastError || null,
+    workflowEvents: safeWorkflowEvents(session.workflowEvents),
     taskRef: {
       current: session.taskRef?.current || null,
       presentation: session.taskRef?.presentation || null,
@@ -67,6 +83,7 @@ function hydrateSession(snapshot) {
       renderAbsolutePath: snapshot.taskRef?.renderAbsolutePath || null,
     },
     messages: safeMessages(snapshot.messages),
+    workflowEvents: safeWorkflowEvents(snapshot.workflowEvents),
   }
   if (session.runState === 'running') {
     session.runState = 'interrupted'
@@ -78,7 +95,12 @@ function hydrateSession(snapshot) {
 
 function summary(session, includeMessages = false) {
   const value = sessionSnapshot(session)
-  if (includeMessages) value.messages = safeMessages(session.messages)
+  if (includeMessages) {
+    value.messages = safeMessages(session.messages)
+    value.workflowEvents = safeWorkflowEvents(session.workflowEvents)
+  } else {
+    delete value.workflowEvents
+  }
   return value
 }
 

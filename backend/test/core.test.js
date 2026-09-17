@@ -64,6 +64,10 @@ test('session store survives restart and marks interrupted runs for recovery', a
       runState: 'running',
       taskRef: { current: task(), presentation: null, presentationRevision: 1 },
       messages: [{ role: 'user', content: '继续完善简历' }],
+      workflowEvents: [
+        { event: 'tool_call_started', sessionId: 'session_restart_test', runId: 'run-1', toolName: 'resume_read', timestamp: '2026-09-17T00:00:00.000Z', secret: 'must-not-persist' },
+        { event: 'tool_call_succeeded', sessionId: 'session_restart_test', runId: 'run-1', toolName: 'resume_read', durationMs: 12 },
+      ],
     }
     await store.save(session, { event: 'agent_run_started', state: 'drafting' })
 
@@ -74,6 +78,9 @@ test('session store survives restart and marks interrupted runs for recovery', a
     assert.equal(restored.lastError.code, 'SESSION_INTERRUPTED')
     assert.equal(restored.sourceHash, 'source-1')
     assert.equal(restored.messages[0].content, '继续完善简历')
+    assert.equal(restored.workflowEvents.length, 2)
+    assert.equal(restored.workflowEvents[0].toolName, 'resume_read')
+    assert.equal(Object.hasOwn(restored.workflowEvents[0], 'secret'), false)
     const eventLines = (await fs.readFile(path.join(directory, session.sessionId, 'events.ndjson'), 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line))
     assert.equal(eventLines[0].event, 'agent_run_started')
     assert.equal(eventLines[0].state, 'drafting')

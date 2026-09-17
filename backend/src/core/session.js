@@ -25,6 +25,7 @@ export function createResumeSession({ workspace, resumePath, templateId, templat
     sourceHash,
     taskRef: { current: task, presentation: null, presentationRevision: 1 },
     messages: [],
+    workflowEvents: [],
   }
 }
 

@@ -1,0 +1,8 @@
+node_modules/
+.cvagent/
+logs/*.ndjson
+logs/*.png
+.env
+.env.*
+!.env.example
+dist/

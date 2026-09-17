@@ -1,0 +1,197 @@
+import { readWorkspaceFile, writeWorkspaceFile } from './workspace.js'
+
+export const PRESENTATION_FILE = 'presentation.json'
+export const PRESENTATION_SCHEMA_VERSION = 2
+
+const TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
+const FONT_FAMILIES = new Set(['system-sans', 'modern-sans', 'serif'])
+const COLOR = /^#[0-9a-f]{6}$/i
+
+function numberIn(value, min, max, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback
+}
+
+function cleanRelativePath(value) {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!normalized || normalized.split('/').some((part) => part === '..')) return null
+  return normalized
+}
+
+function cleanResumePath(value) {
+  const normalized = cleanRelativePath(value)
+  if (!normalized || normalized.startsWith('.cvagent/') || !/(?:^|\/)resume\.md$/i.test(normalized)) return null
+  return normalized
+}
+
+function cleanLayout(value = {}) {
+  const result = {}
+  if (FONT_FAMILIES.has(value.fontFamily)) result.fontFamily = value.fontFamily
+  if (value.fontSize !== undefined) result.fontSize = numberIn(value.fontSize, 11, 18, 14)
+  if (value.lineHeight !== undefined) result.lineHeight = numberIn(value.lineHeight, 1.2, 2, 1.55)
+  if (value.sectionGap !== undefined) result.sectionGap = numberIn(value.sectionGap, 6, 30, 20)
+  if (value.pageMargin !== undefined) result.pageMargin = numberIn(value.pageMargin, 24, 72, 48)
+  return result
+}
+
+function cleanVisual(value = {}) {
+  const result = {}
+  for (const key of ['accentColor', 'textColor', 'mutedColor', 'backgroundColor']) {
+    if (COLOR.test(String(value[key] || ''))) result[key] = String(value[key]).toLowerCase()
+  }
+  if (value.cornerRadius !== undefined) result.cornerRadius = numberIn(value.cornerRadius, 0, 16, 0)
+  if (['none', 'solid', 'dashed'].includes(value.divider)) result.divider = value.divider
+  return result
+}
+
+function cleanIconTuning(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const result = {}
+  for (const [name, tuning] of Object.entries(value)) {
+    if (!/^(?:\*|[a-z0-9_-]+)$/i.test(name) || !tuning || typeof tuning !== 'object') continue
+    result[name.toLowerCase()] = {
+      scale: numberIn(tuning.scale, 0.7, 1.5, 1),
+      offsetY: numberIn(tuning.offsetY, -0.25, 0.25, 0),
+    }
+  }
+  return result
+}
+
+function cleanOverride(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    layout: cleanLayout(source.layout),
+    visual: cleanVisual(source.visual),
+    iconTuning: cleanIconTuning(source.iconTuning),
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+  }
+}
+
+function mergeOverride(target, templateId, override) {
+  if (!TEMPLATE_ID.test(templateId) || !override || typeof override !== 'object') return
+  target[templateId] = cleanOverride(override)
+}
+
+export function emptyPresentation() {
+  return { schemaVersion: PRESENTATION_SCHEMA_VERSION, activeTemplateId: null, activePreviewPath: null, overrides: {}, resumeOverrides: {} }
+}
+
+export function normalizePresentation(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const result = emptyPresentation()
+  if (TEMPLATE_ID.test(String(source.activeTemplateId || ''))) result.activeTemplateId = String(source.activeTemplateId)
+  result.activePreviewPath = cleanRelativePath(source.activePreviewPath)
+  for (const [templateId, override] of Object.entries(source.overrides || {})) {
+    mergeOverride(result.overrides, templateId, override)
+  }
+  for (const [resumePath, overrides] of Object.entries(source.resumeOverrides || {})) {
+    const normalizedResumePath = cleanResumePath(resumePath)
+    if (!normalizedResumePath || !overrides || typeof overrides !== 'object') continue
+    result.resumeOverrides[normalizedResumePath] = {}
+    for (const [templateId, override] of Object.entries(overrides)) {
+      mergeOverride(result.resumeOverrides[normalizedResumePath], templateId, override)
+    }
+    if (!Object.keys(result.resumeOverrides[normalizedResumePath]).length) delete result.resumeOverrides[normalizedResumePath]
+  }
+  return result
+}
+
+export async function loadPresentation(root) {
+  try {
+    const { content } = await readWorkspaceFile(root, PRESENTATION_FILE)
+    return normalizePresentation(JSON.parse(content))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return emptyPresentation()
+    return emptyPresentation()
+  }
+}
+
+export async function savePresentationOverride(root, {
+  templateId,
+  layout = {},
+  visual = {},
+  iconTuning = {},
+  activeTemplateId = templateId,
+  activePreviewPath,
+  resumePath,
+  reset = false,
+  activeOnly = false,
+  clear = [],
+} = {}) {
+  if (!TEMPLATE_ID.test(String(templateId || ''))) throw new Error('templateId must be lower-kebab-case')
+  const current = await loadPresentation(root)
+  if (TEMPLATE_ID.test(String(activeTemplateId || ''))) current.activeTemplateId = String(activeTemplateId)
+  if (activePreviewPath !== undefined) current.activePreviewPath = cleanRelativePath(activePreviewPath)
+  const scopedResumePath = cleanResumePath(resumePath)
+  const targetOverrides = scopedResumePath
+    ? (current.resumeOverrides[scopedResumePath] ||= {})
+    : current.overrides
+  if (reset) {
+    delete targetOverrides[templateId]
+  } else if (!activeOnly) {
+    const previous = targetOverrides[templateId] || {}
+    const next = {
+      layout: { ...(previous.layout || {}), ...cleanLayout(layout) },
+      visual: { ...(previous.visual || {}), ...cleanVisual(visual) },
+      iconTuning: { ...(previous.iconTuning || {}), ...cleanIconTuning(iconTuning) },
+      updatedAt: new Date().toISOString(),
+    }
+    for (const field of Array.isArray(clear) ? clear : []) {
+      if (field === 'layout' || field === 'visual' || field === 'iconTuning') delete next[field]
+    }
+    if (Object.keys(next).some((key) => key !== 'updatedAt' && Object.keys(next[key] || {}).length)) targetOverrides[templateId] = next
+    else delete targetOverrides[templateId]
+  }
+  if (scopedResumePath && !Object.keys(targetOverrides).length) delete current.resumeOverrides[scopedResumePath]
+  const normalized = normalizePresentation(current)
+  const saved = await writeWorkspaceFile(root, PRESENTATION_FILE, `${JSON.stringify(normalized, null, 2)}\n`)
+  return { ...saved, presentation: normalized }
+}
+
+export function applyPresentationOverride(template, presentation, templateId = template?.id, resumePath) {
+  if (!template || !presentation || !templateId) return template
+  const override = getPresentationOverride(presentation, templateId, resumePath)
+  if (!override) return template
+  const layout = override.layout || {}
+  return {
+    ...template,
+    typography: { ...(template.typography || {}), ...(layout.fontFamily ? { fontFamily: layout.fontFamily } : {}), ...(layout.fontSize !== undefined ? { fontSize: layout.fontSize } : {}), ...(layout.lineHeight !== undefined ? { lineHeight: layout.lineHeight } : {}) },
+    spacing: { ...(template.spacing || {}), ...(layout.sectionGap !== undefined ? { sectionGap: layout.sectionGap } : {}), ...(layout.pageMargin !== undefined ? { pageMargin: layout.pageMargin } : {}) },
+    visual: { ...(template.visual || {}), ...(override.visual || {}) },
+  }
+}
+
+export function presentationWithOverride(presentation, {
+  templateId,
+  layout = {},
+  visual = {},
+  iconTuning = {},
+  activePreviewPath,
+  resumePath,
+} = {}) {
+  const current = normalizePresentation(presentation)
+  if (TEMPLATE_ID.test(String(templateId || ''))) {
+    current.activeTemplateId = String(templateId)
+    const scopedResumePath = cleanResumePath(resumePath)
+    const targetOverrides = scopedResumePath
+      ? (current.resumeOverrides[scopedResumePath] ||= {})
+      : current.overrides
+    const previous = targetOverrides[templateId] || {}
+    targetOverrides[templateId] = {
+      layout: cleanLayout(layout),
+      visual: cleanVisual(visual),
+      iconTuning: cleanIconTuning(iconTuning),
+      updatedAt: previous.updatedAt,
+    }
+  }
+  if (activePreviewPath !== undefined) current.activePreviewPath = cleanRelativePath(activePreviewPath)
+  return normalizePresentation(current)
+}
+
+export function getPresentationOverride(presentation, templateId, resumePath) {
+  if (!presentation || !TEMPLATE_ID.test(String(templateId || ''))) return {}
+  const normalizedResumePath = cleanResumePath(resumePath)
+  return (normalizedResumePath && presentation.resumeOverrides?.[normalizedResumePath]?.[templateId])
+    || presentation.overrides?.[templateId]
+    || {}
+}

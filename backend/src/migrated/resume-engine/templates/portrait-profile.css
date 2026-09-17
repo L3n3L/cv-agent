@@ -1,0 +1,57 @@
+/*
+ * Portrait Profile — independent visual system.
+ * A personal-brand layout with a soft rose identity rail and editorial cards.
+ */
+.resume-document[data-template-id="portrait-profile"] { --portrait-rose:#be185d; --portrait-ink:#302332; --portrait-soft:#fff1f7; background:#fdf7fa; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-page { background:#fffafe; box-shadow:0 18px 45px rgba(157,23,77,.12); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-page-content { background:radial-gradient(circle at 94% 4%,rgba(244,114,182,.17),transparent 24%),linear-gradient(180deg,#fffafe,#fff); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-head { position:relative; grid-template-columns:118px minmax(0,1fr); gap:24px; padding:10px 0 24px; border-bottom:1px solid #f3c4da; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-head::before { content:"PROFILE / 2026"; position:absolute; right:0; top:0; color:#c084a3; font:700 8px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.2em; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-frame { width:118px; height:138px; border:1px solid #f3c4da; border-radius:18px 18px 42px 18px; background:linear-gradient(145deg,#fce7f3,#fff); box-shadow:9px 9px 0 rgba(244,114,182,.16); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-frame .cvagent-photo { width:100%; height:100%; border-radius:18px 18px 42px 18px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-placeholder { width:86px; height:86px; border:1px solid #e879a9; color:var(--portrait-rose); background:#fff; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-copy .header-block { padding:20px 0 0; border:0; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-copy .header-block h1 { color:var(--portrait-ink); font-size:37px; font-weight:800; line-height:.94; letter-spacing:-.075em; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-copy .header-block h1::after { content:""; display:inline-block; width:38px; height:7px; margin:0 0 3px 10px; border-radius:99px 3px 99px 3px; background:var(--portrait-rose); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-copy .header-block p { max-width:480px; margin-top:14px; color:#806477; font-size:12px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-body { grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr); column-gap:26px; padding-top:25px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-body .cvagent-renderer-item { min-width:0; padding:13px 14px 3px; border:1px solid #f5d6e4; border-radius:14px; background:rgba(255,255,255,.72); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-portrait-body .cvagent-renderer-item:nth-child(3n) { grid-column:1/-1; border-radius:14px 14px 4px 14px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section > h2 { display:flex; align-items:center; gap:7px; margin:0 0 10px; color:var(--portrait-rose); border:0; font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section > h2::before { content:"✦"; color:#f472b6; font-size:10px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section h3 { margin:11px 0 4px; color:var(--portrait-ink); font-size:14px; font-weight:800; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section p,
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section li { color:#574452; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section li::marker { color:#e879a9; }
+.resume-document[data-template-id="portrait-profile"] strong { color:var(--portrait-rose); font-weight:800; }
+.resume-document[data-template-id="portrait-profile"] a { color:var(--portrait-rose); text-decoration:underline; text-decoration-color:#f9a8d4; text-underline-offset:3px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-skill-tags { gap:7px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-skill-tag { padding:5px 9px; color:var(--portrait-rose); border:1px solid #f3c4da; border-radius:7px 7px 7px 2px; background:var(--portrait-soft); font-size:11px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-summary { padding:9px 11px; border:0; border-radius:8px; background:var(--portrait-soft); }
+.resume-document[data-template-id="portrait-profile"] .meta { color:#9b7186; border-top-color:#f3c4da; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section .cvagent-entry-title { margin-bottom:4px; letter-spacing:-.015em; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section .cvagent-entry-meta { display:flex; flex-wrap:wrap; gap:5px 10px; color:#9b7186; font:600 10px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section .cvagent-entry-bullets { margin-top:7px; padding-left:1.1em; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section .cvagent-entry-bullets li + li { margin-top:4px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section .cvagent-entry-bullets strong { color:var(--portrait-rose); }
+
+/* Content layer: soft cards keep the personal-brand tone without hiding text. */
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section table { width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; margin:10px 0 14px; border:1px solid #f3c4da; border-radius:9px; background:#fff; font-size:11px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section thead { background:#fff1f7; color:var(--portrait-rose); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section th { padding:8px 9px; border-bottom:1px solid #f3c4da; text-align:left; font-weight:800; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section td { padding:8px 9px; border-bottom:1px solid #f9dce9; vertical-align:top; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section tbody tr:last-child td { border-bottom:0; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section tbody tr:nth-child(even) { background:#fff8fb; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section blockquote { margin:10px 0; padding:10px 12px; border-left:3px solid var(--portrait-rose); border-radius:0 8px 8px 0; background:#fff1f7; color:#806477; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section blockquote p { margin:0; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section code { padding:2px 6px; border-radius:5px; background:#fff1f7; color:var(--portrait-rose); font:600 11px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section pre { overflow:auto; margin:10px 0; padding:11px 12px; border-radius:9px; background:#fff1f7; color:#574452; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section pre code { padding:0; background:transparent; color:inherit; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-resume-section a:hover { color:#be185d; text-decoration-thickness:2px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-entry-bullets li + li { margin-top:5px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-module-experience .cvagent-entry-title,
+.resume-document[data-template-id="portrait-profile"] .cvagent-module-projects .cvagent-entry-title { padding:7px 10px; border-left:3px solid #e879a9; border-radius:0 7px 7px 0; background:#fff8fb; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-module-experience .cvagent-entry-meta { padding-left:13px; }
+.resume-document[data-template-id="portrait-profile"] .cvagent-skill-group { box-shadow:0 3px 0 rgba(244,114,182,.07); }
+.resume-document[data-template-id="portrait-profile"] .cvagent-icon { border:1px solid #f3c4da; border-radius:9px 9px 9px 3px; background:#fff1f7; color:var(--portrait-rose); }
+@media print { .resume-document[data-template-id="portrait-profile"] .cvagent-resume-page { box-shadow:none; } }

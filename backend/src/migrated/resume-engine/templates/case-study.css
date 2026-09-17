@@ -1,0 +1,59 @@
+/*
+ * Case Study — independent visual system.
+ * A product-style evidence board: one flagship case, then supporting proof.
+ */
+.resume-document[data-template-id="case-study"] { --case-blue:#1d4ed8; --case-ink:#172033; --case-sky:#eff6ff; --case-rule:#c8daf8; background:#eef4fb; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-page { background:#f8fbff; box-shadow:0 18px 42px rgba(30,64,175,.13); }
+.resume-document[data-template-id="case-study"] .cvagent-resume-page-content { background:linear-gradient(135deg,#f8fbff 0 73%,#edf5ff 73% 100%); }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro { position:relative; padding:0 0 20px; border-bottom:1px solid var(--case-rule); }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro::before { content:"SELECTED WORK / 01"; display:block; margin-bottom:12px; color:var(--case-blue); font:800 9px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.16em; }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro .header-block { padding:0; border:0; }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro .header-block h1 { color:var(--case-ink); font-size:38px; font-weight:850; letter-spacing:-.07em; }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro .header-block h1::after { content:" /"; color:var(--case-blue); font-weight:400; }
+.resume-document[data-template-id="case-study"] .cvagent-case-intro .header-block p { max-width:610px; margin-top:12px; color:#536783; font-size:12px; }
+.resume-document[data-template-id="case-study"] .cvagent-case-label { display:inline-flex; margin-top:15px; padding:5px 8px; color:var(--case-blue); border:1px solid #a8c5f5; border-radius:3px; background:var(--case-sky); font:800 9px/1.1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.16em; }
+.resume-document[data-template-id="case-study"] .cvagent-case-layout { grid-template-columns:minmax(0,1.34fr) minmax(0,.66fr); gap:19px; margin-top:23px; }
+.resume-document[data-template-id="case-study"] .cvagent-case-feature { padding:17px 17px 7px; border:1px solid #9fbeef; border-radius:8px; background:#fff; box-shadow:9px 9px 0 rgba(37,99,235,.12); }
+.resume-document[data-template-id="case-study"] .cvagent-case-feature::before { content:"OUTCOME FIRST"; display:block; margin-bottom:10px; color:#6b86ae; font:800 8px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.17em; }
+.resume-document[data-template-id="case-study"] .cvagent-case-feature .cvagent-resume-section > h2 { margin-bottom:13px; color:var(--case-ink); border:0; font-size:18px; }
+.resume-document[data-template-id="case-study"] .cvagent-case-feature .cvagent-resume-section > h2::before { content:"↗"; display:inline-grid; place-items:center; width:22px; height:22px; margin-right:7px; border-radius:50%; background:var(--case-blue); color:#fff; font-size:13px; }
+.resume-document[data-template-id="case-study"] .cvagent-case-support-list { gap:6px; }
+.resume-document[data-template-id="case-study"] .cvagent-case-support { padding:7px 0 8px; border-bottom:1px solid var(--case-rule); }
+.resume-document[data-template-id="case-study"] .cvagent-case-support::before { content:"EVIDENCE"; display:block; margin-bottom:7px; color:#6b86ae; font:800 8px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.16em; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section > h2 { margin-bottom:10px; color:var(--case-blue); border-bottom:2px solid var(--case-rule); font-size:14px; font-weight:800; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section > h2::after { content:""; display:inline-block; width:24px; height:4px; margin-left:8px; background:var(--case-blue); }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section h3 { margin:11px 0 4px; color:var(--case-ink); font-size:14px; font-weight:800; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section p,
+.resume-document[data-template-id="case-study"] .cvagent-resume-section li { color:#334866; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section li::marker { color:var(--case-blue); }
+.resume-document[data-template-id="case-study"] strong { color:var(--case-blue); }
+.resume-document[data-template-id="case-study"] .cvagent-skill-tags { gap:7px; }
+.resume-document[data-template-id="case-study"] .cvagent-skill-tag { padding:5px 8px; border:1px solid #aec8f3; border-radius:4px; background:#fff; color:var(--case-blue); font-size:10px; }
+.resume-document[data-template-id="case-study"] .cvagent-summary { padding:10px 12px; border:1px solid #c8daf8; border-left:4px solid var(--case-blue); background:var(--case-sky); }
+.resume-document[data-template-id="case-study"] a { color:var(--case-blue); }
+.resume-document[data-template-id="case-study"] .meta { color:#6b86ae; border-top-color:var(--case-rule); }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section .cvagent-entry-title { margin-bottom:4px; color:var(--case-ink); font-weight:800; letter-spacing:-.015em; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section .cvagent-entry-meta { display:flex; flex-wrap:wrap; gap:5px 10px; color:#6780a5; font:600 10px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section .cvagent-entry-bullets { margin-top:7px; padding-left:1.15em; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section .cvagent-entry-bullets li + li { margin-top:4px; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section .cvagent-entry-bullets strong { color:var(--case-blue); }
+
+/* Content layer: outcome evidence stays modular at every content depth. */
+.resume-document[data-template-id="case-study"] .cvagent-resume-section table { width:100%; border-collapse:collapse; margin:10px 0 14px; border:1px solid var(--case-rule); background:#fff; font-size:11px; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section thead { background:var(--case-sky); color:var(--case-ink); }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section th { padding:8px 9px; border-bottom:2px solid var(--case-rule); text-align:left; font-weight:800; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section td { padding:8px 9px; border-bottom:1px solid #e2ebf8; vertical-align:top; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section tbody tr:nth-child(even) { background:#f8fbff; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section blockquote { margin:10px 0; padding:10px 13px; border-left:4px solid var(--case-blue); background:var(--case-sky); color:#536783; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section blockquote p { margin:0; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section code { padding:2px 6px; border-radius:4px; background:var(--case-sky); color:var(--case-blue); font:600 11px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section pre { overflow:auto; margin:10px 0; padding:11px 13px; border:1px solid var(--case-rule); border-left:4px solid var(--case-blue); background:#f8fbff; color:var(--case-ink); }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section pre code { padding:0; background:transparent; color:inherit; }
+.resume-document[data-template-id="case-study"] .cvagent-resume-section a:hover { color:#1e40af; text-decoration-thickness:2px; }
+.resume-document[data-template-id="case-study"] .cvagent-entry-bullets li + li { margin-top:5px; }
+.resume-document[data-template-id="case-study"] .cvagent-module-projects .cvagent-entry-title { padding:9px 11px; border:1px solid #9fbeef; border-radius:6px; background:#fff; box-shadow:4px 4px 0 rgba(37,99,235,.08); }
+.resume-document[data-template-id="case-study"] .cvagent-module-experience .cvagent-entry-title { padding-left:10px; border-left:4px solid var(--case-blue); }
+.resume-document[data-template-id="case-study"] .cvagent-module-experience .cvagent-entry-meta { padding-left:14px; }
+.resume-document[data-template-id="case-study"] .cvagent-skill-group { padding:8px 10px; border-color:var(--case-rule); background:#fff; }
+.resume-document[data-template-id="case-study"] .cvagent-icon { border:1px solid #aec8f3; border-radius:4.5px; background:var(--case-sky); color:var(--case-blue); }
+@media print { .resume-document[data-template-id="case-study"] .cvagent-resume-page { box-shadow:none; } }

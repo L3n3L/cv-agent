@@ -1,0 +1,606 @@
+import http from 'node:http'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createConfiguredResumeAgent } from './agent/configured-agent.js'
+import { contextFields } from './core/context.js'
+import { contentHash } from './core/content.js'
+import { parseJsonBody, readJsonBody, requestRoute, sendJson } from './core/http.js'
+import { createLogger } from './core/logger.js'
+import { emitWorkflowEvent, WORKFLOW_EVENTS } from './core/event-catalog.js'
+import { assertSessionScope, createResumeSession, withSessionLock } from './core/session.js'
+import { createSessionStore } from './core/session-store.js'
+import { createResumeToolHandlers, createResumeTools } from './agent/resume-tools.js'
+import { measureSchema, presentationSchema, qualitySchema, templateCopySchema, templateSelectSchema, writeSchema } from './agent/schemas.js'
+import { archiveResumeVersion, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
+import { createWorkspaceRegistry } from './core/workspace-registry.js'
+import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/workflow.js'
+import { copyWorkspaceTemplate, listWorkspaceTemplates, loadWorkspaceTemplate, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
+
+const port = Number(process.env.CVAGENT_PORT || 3180)
+const logger = createLogger({ component: 'cvagent-server' })
+const publicRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public')
+
+async function serveStatic(request, response) {
+  if (request.method !== 'GET') return false
+  const pathname = request.url === '/' ? '/index.html' : request.url.split('?')[0]
+  let relative
+  try { relative = decodeURIComponent(pathname).replace(/^\/+/, '') } catch { return false }
+  if (!relative || relative.split('/').includes('..')) return false
+  const filePath = path.resolve(publicRoot, relative)
+  if (path.relative(publicRoot, filePath).startsWith('..')) return false
+  const content = await fs.readFile(filePath).catch(() => null)
+  if (!content) return false
+  const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' }
+  response.writeHead(200, { 'content-type': types[path.extname(filePath)] || 'application/octet-stream', 'cache-control': 'no-store' })
+  response.end(content)
+  return true
+}
+
+function assistantText(result) {
+  const messages = Array.isArray(result?.messages) ? result.messages : []
+  const last = [...messages].reverse().find((message) => message?.role === 'assistant' || message?.type === 'ai' || message?.constructor?.name === 'AIMessage')
+  if (typeof last?.content === 'string') return last.content
+  if (Array.isArray(last?.content)) return last.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
+  return ''
+}
+
+async function loadSession(sessions, sessionStore, sessionId, serverLogger = null) {
+  const safeId = String(sessionId || '').trim()
+  if (!safeId) return null
+  const cached = sessions.get(safeId)
+  if (cached) return cached
+  const restored = await sessionStore.load(safeId)
+  if (restored) {
+    sessions.set(safeId, restored)
+    const interrupted = restored.lastError?.code === 'SESSION_INTERRUPTED'
+    await emitWorkflowEvent(serverLogger, interrupted ? WORKFLOW_EVENTS.SESSION_INTERRUPTED : WORKFLOW_EVENTS.SESSION_RESTORED, { ...restored.taskRef.current, sessionId: restored.sessionId }, {
+      state: restored.taskRef.current?.state || restored.status,
+      runState: restored.runState,
+      recovered: true,
+    })
+  }
+  return restored
+}
+
+async function persistSession(sessionStore, session, event = null) {
+  if (!session?.sessionId) return
+  await sessionStore.save(session, event)
+}
+
+function sessionToolPersistence(sessionStore, session) {
+  return async ({ toolName }) => {
+    session.status = session.taskRef.current?.state || session.status || 'idle'
+    await persistSession(sessionStore, session, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, toolName, state: session.status, ...contextFields(session.taskRef.current?.context) })
+  }
+}
+
+export function createServer(options = {}) {
+  const serverLogger = options.logger || logger
+  const agentFactory = options.agentFactory || ((agentOptions) => createConfiguredResumeAgent(agentOptions))
+  const sessions = new Map()
+  const sessionStore = options.sessionStore || createSessionStore({ directory: options.sessionDirectory })
+  const workspaceRegistry = options.workspaceRegistry || createWorkspaceRegistry({ directory: options.workspaceDirectory })
+  const server = http.createServer((request, response) => {
+    const requestId = `req_${crypto.randomUUID()}`
+    const route = requestRoute(request.url)
+    const requestLogger = serverLogger.child({ requestId })
+    const startedAt = Date.now()
+    response.setHeader('x-cvagent-request-id', requestId)
+    void requestLogger.info('http_request_started', { method: request.method, route })
+    response.once('finish', () => { void requestLogger.info('http_request_finished', { method: request.method, route, statusCode: response.statusCode, durationMs: Date.now() - startedAt, ...(response.__cvagentErrorCode ? { errorCode: response.__cvagentErrorCode } : {}) }) })
+    if (request.method === 'GET' && (request.url === '/' || request.url?.startsWith('/app.') || request.url?.startsWith('/styles.') || request.url?.startsWith('/workbench.css'))) {
+      void serveStatic(request, response).then((served) => { if (!served) sendJson(response, 404, { error: 'not_found' }) })
+      return
+    }
+    if (request.method === 'GET' && request.url === '/health') {
+      sendJson(response, 200, { ok: true, product: 'CVAgent' })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/sessions')) {
+      void handleSessions(request, response, { sessionStore, workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url === '/api/workspaces') {
+      void handleWorkspaceList(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/workspace?')) {
+      void handleWorkspaceDetail(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/workspaces/import') {
+      void handleWorkspaceImport(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/session?')) {
+      void handleSession(request, response, { sessions, sessionStore, serverLogger: requestLogger, workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/templates')) {
+      void handleTemplates(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/template?')) {
+      void handleTemplate(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/asset?')) {
+      void handleAsset(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && (request.url === '/api/templates/copy' || request.url === '/api/templates/save')) {
+      void handleTemplateMutation(request, response, { action: request.url.split('/').at(-1), workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/source')) {
+      void handleSource(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/previews')) {
+      void handlePreviews(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/agent/bootstrap') {
+      void handleAgentBootstrap(request, response, { serverLogger: requestLogger, sessions, sessionStore, workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/versions')) {
+      void handleVersions(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/version?')) {
+      void handleVersion(request, response, { workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && (request.url === '/api/versions/rename' || request.url === '/api/versions/archive')) {
+      void handleVersionMutation(request, response, { action: request.url.split('/').at(-1), workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/agent/run') {
+      void handleAgentRun(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workspaceRegistry })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/agent/measure') {
+      void handleMeasurement(request, response, { serverLogger: requestLogger, sessions, sessionStore })
+      return
+    }
+    if (request.method === 'POST' && request.url === '/api/agent/save') {
+      void handleSave(request, response, { serverLogger: requestLogger, sessions, sessionStore })
+      return
+    }
+    if (request.method === 'POST' && (request.url === '/api/agent/template' || request.url === '/api/agent/template-copy' || request.url === '/api/agent/presentation' || request.url === '/api/agent/quality' || request.url === '/api/agent/draft' || request.url === '/api/agent/render')) {
+      void handleDomainAction(request, response, { serverLogger: requestLogger, sessions, sessionStore, action: request.url.split('/').at(-1) })
+      return
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/agent/preview')) {
+      void handlePreview(request, response, { sessions, sessionStore, serverLogger: requestLogger })
+      return
+    }
+    sendJson(response, 404, { error: 'not_found' })
+  })
+  server.flushLogs = async () => { await serverLogger.flush?.() }
+  server.sessionStore = sessionStore
+  server.sessions = sessions
+  server.workspaceRegistry = workspaceRegistry
+  return server
+}
+
+async function resolveWorkspaceInput(input, workspaceRegistry) {
+  const workspaceId = String(input?.workspaceId || '').trim()
+  if (workspaceId) {
+    const record = await workspaceRegistry.resolve(workspaceId)
+    return { ...record, resumePath: record.resumePath }
+  }
+  const workspaceRoot = String(input?.workspaceRoot || '').trim()
+  if (!workspaceRoot) throw Object.assign(new Error('workspaceId is required'), { code: 'WORKSPACE_REQUIRED' })
+  const workspace = await ensureWorkspace(workspaceRoot, input?.workspaceName)
+  return { ...workspace, resumePath: String(input?.resumePath || 'resume.md').trim() }
+}
+
+async function handleWorkspaceList(request, response, options) {
+  try {
+    sendJson(response, 200, { ok: true, workspaces: await options.workspaceRegistry.list() })
+  } catch (error) {
+    sendJson(response, 500, { ok: false, errorCode: String(error?.code || 'WORKSPACE_LIST_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleWorkspaceDetail(request, response, options) {
+  try {
+    const workspaceId = new URL(request.url, 'http://127.0.0.1').searchParams.get('workspaceId') || ''
+    sendJson(response, 200, { ok: true, workspace: await options.workspaceRegistry.metadata(workspaceId) })
+  } catch (error) {
+    const code = String(error?.code || 'WORKSPACE_READ_FAILED')
+    sendJson(response, 400, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleWorkspaceImport(request, response, options) {
+  try {
+    const body = await readJsonBody(request, 48 * 1024 * 1024)
+    const workspace = await options.workspaceRegistry.importFiles({ name: body.name, files: body.files })
+    sendJson(response, 201, { ok: true, workspace: options.workspaceRegistry.publicWorkspace(workspace) })
+  } catch (error) {
+    const code = String(error?.code || 'WORKSPACE_IMPORT_FAILED')
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_INVALID', 'WORKSPACE_FILES_REQUIRED', 'WORKSPACE_TOO_MANY_FILES', 'WORKSPACE_IMPORT_TOO_LARGE', 'WORKSPACE_FILE_UNSUPPORTED', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND'])
+    sendJson(response, clientErrorCodes.has(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleSessions(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = query.searchParams.get('workspaceId')
+      ? await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId') }, options.workspaceRegistry)
+      : null
+    const sessions = await options.sessionStore.list({
+      workspaceRoot: workspace?.root || query.searchParams.get('workspaceRoot') || '',
+      resumePath: workspace?.resumePath || query.searchParams.get('resumePath') || '',
+    })
+    sendJson(response, 200, { ok: true, sessions })
+  } catch (error) {
+    sendJson(response, 500, { ok: false, errorCode: String(error?.code || 'SESSIONS_LIST_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleSession(request, response, options) {
+  try {
+    const sessionId = new URL(request.url, 'http://127.0.0.1').searchParams.get('sessionId') || ''
+    const session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    const source = await readWorkspaceText(session.workspaceRoot, session.resumePath)
+    const draft = session.taskRef.current?.context?.contentVersion && session.taskRef.draftRelativePath
+      ? await readResumeDraft(session.workspaceRoot, session.taskRef.current.context.taskId, session.resumePath).catch(() => null)
+      : null
+    const sessionSummary = options.sessionStore.summary(session, true)
+    delete sessionSummary.workspaceRoot
+    const workspace = await options.workspaceRegistry.metadata(session.workspaceId).catch(() => ({ id: session.workspaceId, name: path.basename(session.workspaceRoot), resumeName: path.basename(session.resumePath) }))
+    sendJson(response, 200, { ok: true, session: sessionSummary, workspace, state: session.taskRef.current?.state || session.status, context: contextFields(session.taskRef.current?.context), source: { path: source.relativePath, content: source.content }, draft: draft ? { path: draft.draftRelativePath, content: draft.content } : null })
+  } catch (error) {
+    const code = String(error?.code || 'SESSION_READ_FAILED')
+    sendJson(response, code === 'SESSION_NOT_FOUND' ? 404 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handlePreviews(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const result = await listWorkspacePreviews(workspace.root)
+    sendJson(response, 200, { ok: true, previews: result.previews, truncated: result.truncated })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'PREVIEWS_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleTemplates(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const templates = await listWorkspaceTemplates(workspace.root)
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, templates })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'TEMPLATE_LIST_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleTemplate(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const id = query.searchParams.get('id') || ''
+    const template = await loadWorkspaceTemplate(workspace.root, id)
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, template })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'TEMPLATE_READ_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleAsset(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') || query.searchParams.get('root') }, options.workspaceRegistry)
+    const asset = await readWorkspaceAsset(workspace.root, query.searchParams.get('path') || '')
+    response.writeHead(200, { 'content-type': asset.contentType, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+    response.end(asset.content)
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'ASSET_READ_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleTemplateMutation(request, response, options) {
+  try {
+    const body = await readJsonBody(request, 192 * 1024)
+    const workspace = await resolveWorkspaceInput(body, options.workspaceRegistry)
+    let result
+    if (options.action === 'copy') {
+      result = await copyWorkspaceTemplate(workspace.root, body.sourceTemplateId, body.newTemplateId, body.name)
+    } else {
+      const template = typeof body.templateJson === 'string' ? JSON.parse(body.templateJson) : body.templateJson
+      result = await saveWorkspaceTemplate(workspace.root, template, { replaceExisting: Boolean(body.replaceExisting), sourceTemplateId: body.sourceTemplateId })
+    }
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, result })
+  } catch (error) {
+    const code = String(error?.code || 'TEMPLATE_MUTATION_FAILED')
+    sendJson(response, ['TEMPLATE_CONFLICT', 'TEMPLATE_NOT_FOUND', 'WORKSPACE_INVALID'].includes(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleSource(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot'), resumePath: query.searchParams.get('resumePath') }, options.workspaceRegistry)
+    const file = await readWorkspaceText(workspace.root, workspace.resumePath)
+    sendJson(response, 200, { ok: true, path: file.relativePath, content: file.content })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'SOURCE_READ_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+/**
+ * Prepare a local resume session without invoking a model.  The workbench
+ * must be usable after a user reads a source file; waiting for an Agent run
+ * here made the Markdown pane look loaded while leaving the A4 preview and
+ * all persistence actions inert.
+ */
+async function handleAgentBootstrap(request, response, options) {
+  let session = null
+  try {
+    const body = await readJsonBody(request, 64 * 1024)
+    const workspaceInput = await resolveWorkspaceInput(body, options.workspaceRegistry)
+    const resumePath = workspaceInput.resumePath
+    const templateId = String(body.templateId || 'campus-standard').trim()
+    const workspace = workspaceInput
+    const source = await readWorkspaceText(workspace.root, resumePath)
+    const template = await loadWorkspaceTemplate(workspace.root, templateId)
+    if (!template?.id) throw Object.assign(new Error(`template is not available in CVAgent: ${templateId}`), { code: 'TEMPLATE_NOT_FOUND' })
+    const sessionId = `session_${crypto.randomUUID()}`
+    const templateRevision = `${template.id}@${Number(template.metadata?.revision || 1)}`
+    session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, sessionId, sourceHash: contentHash(source.content) })
+    options.sessions.set(sessionId, session)
+    const task = session.taskRef.current
+    const runLogger = options.serverLogger.child(contextFields(task.context))
+    const draft = await writeResumeDraft(workspace.root, task.context.taskId, resumePath, source.content)
+    session.taskRef.current = recordDraftWrite(session.taskRef.current, { workspaceId: workspace.id, resumeId: resumePath, contentVersion: draft.contentVersion })
+    session.taskRef.draftRelativePath = draft.draftRelativePath
+    const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+    const rendered = await handlers.resumeRender()
+    await runLogger.info('session_bootstrapped', { workspaceRoot: workspace.root, resumePath, templateId: template.id, renderId: rendered.renderId })
+    const current = session.taskRef.current
+    sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, context: contextFields(current.context), draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content } })
+  } catch (error) {
+    const details = { errorCode: String(error?.code || 'AGENT_BOOTSTRAP_FAILED'), errorMessage: String(error?.message || error) }
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'TEMPLATE_NOT_FOUND'])
+    sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
+  }
+}
+
+async function handleVersions(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const includeArchived = query.searchParams.get('includeArchived') === 'true'
+    const allVersions = await listResumeVersions(workspace.root)
+    const versions = includeArchived ? allVersions : allVersions.filter((version) => !version.archived)
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, versions })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'VERSION_LIST_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleVersion(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const version = await readResumeVersion(workspace.root, query.searchParams.get('versionId') || '')
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, version })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'VERSION_READ_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleVersionMutation(request, response, options) {
+  try {
+    const body = await readJsonBody(request, 32 * 1024)
+    const workspace = await resolveWorkspaceInput(body, options.workspaceRegistry)
+    let version
+    if (options.action === 'rename') version = await renameResumeVersion(workspace.root, body.versionId, body.name)
+    else version = await archiveResumeVersion(workspace.root, body.versionId)
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, version })
+  } catch (error) {
+    const code = String(error?.code || 'VERSION_MUTATION_FAILED')
+    sendJson(response, ['VERSION_INVALID', 'VERSION_NOT_FOUND', 'VERSION_NAME_INVALID', 'WORKSPACE_INVALID'].includes(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleDomainAction(request, response, options) {
+  let session = null
+  try {
+    const body = await readJsonBody(request, 128 * 1024)
+    const sessionId = String(body.sessionId || '').trim()
+    session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    return await withSessionLock(session, async () => {
+      const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
+      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+      const input = options.action === 'template'
+        ? parseJsonBody(templateSelectSchema, body, 'DOMAIN_INPUT_INVALID')
+        : options.action === 'template-copy'
+          ? parseJsonBody(templateCopySchema, body, 'DOMAIN_INPUT_INVALID')
+          : options.action === 'presentation'
+            ? parseJsonBody(presentationSchema, body, 'DOMAIN_INPUT_INVALID')
+            : options.action === 'quality'
+              ? parseJsonBody(qualitySchema, body, 'DOMAIN_INPUT_INVALID')
+              : options.action === 'draft'
+                ? parseJsonBody(writeSchema, body, 'DOMAIN_INPUT_INVALID')
+                : {}
+      let result
+      if (options.action === 'template') result = await handlers.templateSelect(input)
+      else if (options.action === 'template-copy') result = await handlers.templateCopy(input)
+      else if (options.action === 'presentation') result = await handlers.presentationUpdate(input)
+      else if (options.action === 'quality') result = await handlers.resumeQuality(input)
+      else if (options.action === 'draft') result = await handlers.resumeDraftWrite(input)
+      else result = await handlers.resumeRender()
+      sendJson(response, 200, { ok: true, sessionId, result, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) })
+    })
+  } catch (error) {
+    const code = String(error?.code || 'DOMAIN_ACTION_FAILED')
+    sendJson(response, ['SESSION_NOT_FOUND', 'DOMAIN_INPUT_INVALID'].includes(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleMeasurement(request, response, options) {
+  let session = null
+  try {
+    const body = await readJsonBody(request, 64 * 1024)
+    const input = parseJsonBody(measureSchema, body, 'MEASUREMENT_INVALID')
+    const sessionId = String(body.sessionId || '').trim()
+    session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    return await withSessionLock(session, async () => {
+      if (String(input.renderId) !== String(session.taskRef.current.context.renderId || '')) throw Object.assign(new Error('measurement renderId is stale'), { code: 'MEASUREMENT_STALE' })
+      const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
+      const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+      const measurement = await handlers.resumeMeasure(input)
+      const verification = await handlers.resumeVerify()
+      sendJson(response, 200, { ok: true, sessionId, measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) })
+    })
+  } catch (error) {
+    const details = { errorCode: String(error?.code || 'MEASUREMENT_FAILED'), errorMessage: String(error?.message || error) }
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MEASUREMENT_INVALID', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'TOOL_FAILED'])
+    sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
+  }
+}
+
+async function handleAgentRun(request, response, options) {
+  let task = null
+  let session = null
+  try {
+    const body = await readJsonBody(request)
+    const message = String(body.message || '').trim()
+    const workspaceInput = await resolveWorkspaceInput(body, options.workspaceRegistry)
+    const resumePath = workspaceInput.resumePath
+    if (!message) throw Object.assign(new Error('message is required'), { code: 'MESSAGE_REQUIRED' })
+    const workspace = workspaceInput
+    const source = await readWorkspaceText(workspace.root, resumePath)
+    const sourceHash = contentHash(source.content)
+    const sessionId = String(body.sessionId || `session_${crypto.randomUUID()}`).trim()
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw Object.assign(new Error('sessionId is invalid'), { code: 'SESSION_INVALID' })
+    session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    assertSessionScope(session, workspace, resumePath)
+    if (session?.sourceHash && session.sourceHash !== sourceHash) throw Object.assign(new Error('source resume changed outside this session; prepare a new session before continuing'), { code: 'SOURCE_CHANGED' })
+    if (!session) {
+      const templateId = String(body.templateId || 'campus-standard').trim()
+      const template = await loadWorkspaceTemplate(workspace.root, templateId)
+      if (!template?.id) throw Object.assign(new Error(`template is not available in CVAgent: ${templateId}`), { code: 'TEMPLATE_NOT_FOUND' })
+      const templateRevision = `${template.id}@${Number(template.metadata?.revision || 1)}`
+      session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, sessionId, sourceHash })
+      options.sessions.set(sessionId, session)
+    }
+    return await withSessionLock(session, async () => {
+      task = session.taskRef.current
+      const taskRef = session.taskRef
+      const runLogger = options.serverLogger.child(contextFields(task.context))
+      session.runState = 'running'
+      session.status = task.state
+      session.lastError = null
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, ...contextFields(task.context) })
+      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, resumePath })
+      const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session) })
+      const agent = await options.agentFactory({ tools, task, taskRef })
+      if (!agent || typeof agent.invoke !== 'function') throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
+      const result = await agent.invoke({ messages: [...session.messages, { role: 'user', content: message }] })
+      if (Array.isArray(result?.messages)) session.messages = result.messages
+      task = taskRef.current
+      session.runState = 'idle'
+      session.status = task.state
+      session.lastError = null
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, ...contextFields(task.context) })
+      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...task, sessionId: session.sessionId }, { outcome: 'success', state: task.state, assistantChars: assistantText(result).length })
+      sendJson(response, 200, { ok: true, sessionId, assistantText: assistantText(result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: taskRef.renderRelativePath || null })
+    })
+  } catch (error) {
+    const details = { errorCode: String(error?.code || 'AGENT_RUN_FAILED'), errorMessage: String(error?.message || error) }
+    if (session) {
+      session.runState = 'failed'
+      session.status = session.taskRef.current?.state || 'failed'
+      session.lastError = { code: details.errorCode, message: details.errorMessage }
+      if (error?.code === 'SOURCE_CHANGED') {
+        await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...session.taskRef.current, sessionId: session.sessionId }, { errorCode: details.errorCode, resumePath: session.resumePath }).catch(() => {})
+      }
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, errorCode: details.errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
+      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, errorCode: details.errorCode }).catch(() => {})
+    }
+    await options.serverLogger.error('agent_run_failed', { ...(task ? contextFields(task.context) : {}), ...details })
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MESSAGE_REQUIRED', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'SESSION_INVALID', 'SESSION_SCOPE_MISMATCH', 'SOURCE_CHANGED'])
+    sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
+  }
+}
+
+async function handlePreview(request, response, options) {
+  try {
+    const sessionId = new URL(request.url, 'http://127.0.0.1').searchParams.get('sessionId') || ''
+    const session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session?.taskRef.renderAbsolutePath) throw Object.assign(new Error('current render was not found'), { code: 'RENDER_NOT_FOUND' })
+    const html = await fs.readFile(session.taskRef.renderAbsolutePath, 'utf8')
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" })
+    response.end(html)
+  } catch (error) {
+    const code = String(error?.code || 'RENDER_NOT_FOUND')
+    sendJson(response, 404, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleSave(request, response, options) {
+  let session = null
+  try {
+    const body = await readJsonBody(request, 32 * 1024)
+    const sessionId = String(body.sessionId || '').trim()
+    session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
+    if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
+    return await withSessionLock(session, async () => {
+      if (body.confirm !== true) throw Object.assign(new Error('explicit user confirmation is required'), { code: 'SAVE_CONFIRMATION_REQUIRED' })
+      const task = session.taskRef.current
+      if (task.state !== 'accepted') throw Object.assign(new Error('resume verification has not passed'), { code: 'SAVE_NOT_ALLOWED' })
+      const runLogger = options.serverLogger.child(contextFields(task.context))
+      const saved = await saveResumeVersion(session.workspaceRoot, task.context.taskId, session.resumePath, { ...contextFields(task.context), state: task.state, name: body.name, templateId: task.context.templateId, presentation: session.taskRef.presentation })
+      session.taskRef.current = saveResumeTask(confirmResumeTask(task))
+      session.status = session.taskRef.current.state
+      session.runState = 'idle'
+      session.lastError = null
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.SAVE_CONFIRMED, state: session.status, versionId: saved.id, ...contextFields(session.taskRef.current.context) })
+      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.SAVE_CONFIRMED, { ...session.taskRef.current, sessionId: session.sessionId }, { versionId: saved.id, versionName: saved.name })
+      sendJson(response, 200, { ok: true, sessionId, state: session.taskRef.current.state, version: { id: saved.id, name: saved.name, resumePath: saved.resumePath, contentVersion: saved.contentVersion, templateRevision: saved.templateRevision } })
+    })
+  } catch (error) {
+    const details = { errorCode: String(error?.code || 'SAVE_FAILED'), errorMessage: String(error?.message || error) }
+    if (session) {
+      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SAVE_REJECTED, { ...session.taskRef.current, sessionId: session.sessionId }, details).catch(() => {})
+    }
+    const clientErrorCodes = new Set(['SESSION_NOT_FOUND', 'SAVE_CONFIRMATION_REQUIRED', 'SAVE_NOT_ALLOWED', 'WORKSPACE_FILE_NOT_FOUND'])
+    sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
+  }
+}
+
+export function startServer() {
+  const server = createServer()
+  let shuttingDown = false
+  const shutdown = async (signal) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    await new Promise((resolve) => server.close(() => resolve()))
+    if (signal) await logger.info('agent_server_stopped', { signal })
+    await server.flushLogs()
+  }
+  server.shutdown = shutdown
+  server.listen(port, '127.0.0.1', () => {
+    void logger.info('agent_server_started', { port })
+  })
+  process.once('SIGINT', () => { void shutdown('SIGINT').then(() => process.exit(0)) })
+  process.once('SIGTERM', () => { void shutdown('SIGTERM').then(() => process.exit(0)) })
+  return server
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) startServer()

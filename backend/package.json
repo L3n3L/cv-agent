@@ -1,0 +1,27 @@
+{
+  "name": "cvagent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CVAgent: standalone AI resume production agent with workspace, template, rendering, and verification loops.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "logs": "node scripts/log-inspect.mjs summary",
+    "logs:tail": "node scripts/log-inspect.mjs tail",
+    "logs:sanitize": "node scripts/sanitize-legacy-logs.mjs"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.9",
+    "@langchain/langgraph": "^1.4.10",
+    "@langchain/langgraph-checkpoint": "^1.1.5",
+    "@langchain/langgraph-sdk": "^1.9.23",
+    "@langchain/openai": "^1.2.0",
+    "deepagents": "^1.13.4",
+    "langchain": "^1.5.10",
+    "langsmith": ">=0.7.1 <0.10.0",
+    "markdown-it": "^14.1.0",
+    "zod": "^4.4.3"
+  }
+}

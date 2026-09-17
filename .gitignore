@@ -1,0 +1,9 @@
+backend/.env
+backend/.cvagent/
+backend/logs/
+backend/node_modules/
+frontend/node_modules/
+*.log
+*.tmp
+Thumbs.db
+.DS_Store

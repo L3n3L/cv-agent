@@ -34,7 +34,8 @@ async function consumeTextStream(stream, onText) {
 
 function isAssistantMessage(message) {
   const role = String(message?.role || message?.type || '').toLowerCase()
-  return role === 'assistant' || role === 'ai' || role === 'aimessage'
+  const node = String(message?.node || '').toLowerCase()
+  return role === 'assistant' || role === 'ai' || role === 'aimessage' || node === 'model_request' || node.endsWith('/model_request')
 }
 
 /**

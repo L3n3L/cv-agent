@@ -65,6 +65,35 @@ function applyTemplateContext(context = {}) {
   if (known) liveState.templateName = known.name || known.id
 }
 
+function workflowEventKey(event) {
+  return [
+    event?.event,
+    event?.timestamp,
+    event?.sessionId,
+    event?.runId,
+    event?.taskId,
+    event?.toolName,
+    event?.toolCallId,
+    event?.messageId,
+    event?.outcome,
+    event?.delta,
+    event?.errorCode,
+  ].map((value) => String(value ?? '')).join('|')
+}
+
+function mergeWorkflowEvents(...sources) {
+  const events = new Map()
+  for (const source of sources) {
+    for (const event of Array.isArray(source) ? source : []) {
+      if (!event?.event) continue
+      events.set(workflowEventKey(event), event)
+    }
+  }
+  return [...events.values()]
+    .sort((left, right) => String(left.timestamp || '').localeCompare(String(right.timestamp || '')))
+    .slice(-240)
+}
+
 async function refreshWorkspaceTemplates({ rerender = false } = {}) {
   if (!liveState.workspaceId) return
   const { body } = await api.get(`/api/templates?workspaceId=${encodeURIComponent(liveState.workspaceId)}`)
@@ -83,7 +112,7 @@ function connectWorkflowEvents() {
     let payload
     try { payload = JSON.parse(event.data) } catch { return }
     if (payload.sessionId !== liveState.sessionId) return
-    liveState.agentEvents = [...liveState.agentEvents, payload].slice(-240)
+    liveState.agentEvents = mergeWorkflowEvents(liveState.agentEvents, [payload])
     if (payload.event === 'agent_run_started') {
       liveState.agentRunActive = true
       liveState.agentRunError = ''
@@ -123,7 +152,7 @@ async function syncActiveSessionFromServer() {
       liveState.sourceContent = body.source?.content || liveState.sourceContent
       liveState.draftContent = body.draft?.content || liveState.draftContent
       liveState.messages = Array.isArray(session.messages) ? session.messages : liveState.messages
-      liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : liveState.agentEvents
+      liveState.agentEvents = mergeWorkflowEvents(liveState.agentEvents, session.workflowEvents)
       liveState.presentation = body.presentation || liveState.presentation
       liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
       liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
@@ -131,9 +160,11 @@ async function syncActiveSessionFromServer() {
       liveState.workflowState = body.state || session.status || liveState.workflowState
       liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
       liveState.measurement = session.taskRef?.current?.measurements || null
-      liveState.agentRunActive = false
-      liveState.streamingAssistantText = ''
-      liveState.streamingMessageId = ''
+      liveState.agentRunActive = session.runState === 'running'
+      if (!liveState.agentRunActive) {
+        liveState.streamingAssistantText = ''
+        liveState.streamingMessageId = ''
+      }
       renderAgentChat({ scrollToBottom: true })
       syncPreviewFrames()
       updateHeader()
@@ -800,6 +831,16 @@ function setPreviewOpen(open) {
   applyLayoutPrefs()
   const button = $('#workbenchAssistantButton')
   if (button) button.textContent = visible ? '收起 Agent' : '打开 Agent'
+  if (visible) scrollAgentChatToBottom()
+}
+
+function scrollAgentChatToBottom() {
+  const stream = $('.chat-stream')
+  if (!stream) return
+  const align = () => { stream.scrollTop = stream.scrollHeight }
+  align()
+  window.requestAnimationFrame(align)
+  window.setTimeout(align, 0)
 }
 
 function chatMessageText(message) {
@@ -842,7 +883,8 @@ function renderAgentChat({ scrollToBottom = false } = {}) {
   bindChat()
   const stream = $('.chat-stream')
   if (!stream) return
-  stream.scrollTop = scrollToBottom ? stream.scrollHeight : previousScrollTop
+  if (scrollToBottom) scrollAgentChatToBottom()
+  else stream.scrollTop = previousScrollTop
 }
 
 function renderEditor() {

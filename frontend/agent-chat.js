@@ -319,7 +319,7 @@
     return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" aria-label="${role}消息" data-message-index="${index}"><div class="message-meta"><span>${role}</span>${time ? `<time>${escapeHtml(time)}</time>` : ''}</div><div class="message-content${isUser ? '' : ' markdown-body'}">${body}</div></article>`
   }
 
-  function renderRunGroup(group, index) {
+  function renderRunGroup(group, index, { open = false } = {}) {
     const status = eventStatus(group.events)
     const rows = processRows(group.events)
     const statusText = statusLabels[status] || status
@@ -329,12 +329,12 @@
       return `<details class="tool-row" ${row.state === 'blocked' ? 'open' : ''}><summary><i class="tool-state ${escapeHtml(row.state)}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><time>${escapeHtml(duration || statusLabels[row.state] || '')}</time></summary>${detail}</details>`
     }).join('') : '<div class="tool-empty">正在处理</div>'
     const summary = rows.length ? `已执行 ${rows.length} 项工具` : '正在准备工具'
-    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${status === 'running' ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
+    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${status === 'running' || open ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
   }
 
-  function renderInterleavedTimeline(messages, groups) {
+  function renderInterleavedTimeline(messages, groups, { openLatest = false } = {}) {
     const normalized = normalizedMessages(messages)
-    if (!normalized.length) return groups.map((group, index) => renderRunGroup(group, index))
+    if (!normalized.length) return groups.map((group, index) => renderRunGroup(group, index, { open: openLatest && index === groups.length - 1 }))
 
     // A conversation turn starts with a user message. Insert the matching
     // workflow group before that turn's final Agent answer, so tool work stays
@@ -363,7 +363,7 @@
 
       turn.forEach((message, index) => {
         if (index === insertionIndex && groupIndex < groups.length) {
-          content.push(renderRunGroup(groups[groupIndex], groupIndex))
+          content.push(renderRunGroup(groups[groupIndex], groupIndex, { open: openLatest && groupIndex === groups.length - 1 }))
           groupIndex += 1
         }
         content.push(renderMessage(message, messageIndex))
@@ -374,7 +374,7 @@
     // Keep unusual/bootstrap events visible even when the session has fewer
     // message turns than persisted workflow runs.
     while (groupIndex < groups.length) {
-      content.push(renderRunGroup(groups[groupIndex], groupIndex))
+      content.push(renderRunGroup(groups[groupIndex], groupIndex, { open: openLatest && groupIndex === groups.length - 1 }))
       groupIndex += 1
     }
     return content
@@ -397,7 +397,7 @@
         events: [{ event: 'agent_run_started', runId: 'active-run', timestamp: new Date().toISOString() }],
       })
     }
-    const content = renderInterleavedTimeline(messages, displayGroups)
+    const content = renderInterleavedTimeline(messages, displayGroups, { openLatest: true })
     const streaming = renderStreamingState(streamingAssistantText)
     if (streaming) content.push(streaming)
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)

@@ -279,8 +279,8 @@ AppShell
 
 - `PaneHeader` 增加 `brand` 变体，侧栏只保留 `CVAgent` 主标题，不再单独手写标题结构；
 - `PaneHeader` 增加 `workspace` 变体，工作区入口不再单独手写标题结构；
-- 品牌区、主路由区和 Agent 使用同一个 `--shell-header-height: 58px` 与同一组内边距；
-- Markdown 和 A4 使用同一个 `--pane-header-height: 58px` 与同一个横向内边距；两个层级高度刻意统一，减少空白和视觉跳跃；
+- 品牌区、主路由区和 Agent 使用同一个 `--shell-header-height: 58px`、同一组内边距，以及一级标题 token `20px / 25px / 600`；
+- Markdown 和 A4 使用同一个 `--pane-header-height: 58px` 与同一个横向内边距；工作区、Markdown、A4 共享二级标题 token `14px / 20px / 600`；两个层级高度刻意统一，减少空白和视觉跳跃；
 - Agent 打开时移除外层顶部偏移，只保留横向内容留白，Agent 标题顶边与侧栏品牌、主路由标题处于同一水平轨道；
 - 移除“简历制作工作台”“当前工作区”“当前会话草稿”等重复解释性标题，只保留 `CVAgent`、工作区名、主路由名、`Markdown 编辑`、`A4 预览`、`Agent` 等主标题；动态状态继续保留在功能状态栏或隐藏兼容锚点中；
 - 桌面端工作台去掉主区和编辑区之间的额外外部 padding，内容从标题栏下方直接开始；

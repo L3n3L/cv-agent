@@ -33,7 +33,6 @@ const liveState = {
   agentRunActive: false,
   agentRunError: '',
   streamingAssistantText: '',
-  streamingReasoning: '',
   streamingMessageId: '',
   loading: false,
   templatePanel: null,
@@ -89,7 +88,6 @@ function connectWorkflowEvents() {
       liveState.agentRunActive = true
       liveState.agentRunError = ''
       liveState.streamingAssistantText = ''
-      liveState.streamingReasoning = payload.reasoningSummary || '正在准备本轮任务。'
       liveState.streamingMessageId = ''
     }
     if (payload.event === 'assistant_delta') {
@@ -100,8 +98,6 @@ function connectWorkflowEvents() {
       liveState.streamingAssistantText += String(payload.delta || '')
       liveState.agentRunActive = true
     }
-    if (payload.event === 'reasoning_summary') liveState.streamingReasoning = payload.reasoningSummary || liveState.streamingReasoning
-    if (payload.reasoningSummary && payload.event !== 'assistant_delta') liveState.streamingReasoning = payload.reasoningSummary
     if (payload.event === 'agent_run_finished') {
       liveState.agentRunActive = false
       if (payload.outcome === 'failed') liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
@@ -137,7 +133,6 @@ async function syncActiveSessionFromServer() {
       liveState.measurement = session.taskRef?.current?.measurements || null
       liveState.agentRunActive = false
       liveState.streamingAssistantText = ''
-      liveState.streamingReasoning = ''
       liveState.streamingMessageId = ''
       renderAgentChat({ scrollToBottom: true })
       syncPreviewFrames()
@@ -453,7 +448,6 @@ async function restoreSession(sessionId) {
     liveState.agentRunActive = false
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
-    liveState.streamingReasoning = ''
     liveState.streamingMessageId = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
@@ -492,7 +486,6 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.agentRunActive = false
   liveState.agentRunError = ''
   liveState.streamingAssistantText = ''
-  liveState.streamingReasoning = ''
   liveState.streamingMessageId = ''
   activeSessionId = ''
   updateConnectionStatus()
@@ -510,7 +503,6 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.agentRunActive = false
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
-    liveState.streamingReasoning = ''
     liveState.streamingMessageId = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || liveState.templateId
@@ -534,7 +526,6 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.agentRunActive = false
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
-    liveState.streamingReasoning = ''
     liveState.streamingMessageId = ''
     activeSessionId = ''
     updateConnectionStatus()
@@ -828,7 +819,6 @@ function renderChatRefined() {
     sessionReady: Boolean(liveState.sessionId),
     activeRun: liveState.agentRunActive,
     streamingAssistantText: liveState.streamingAssistantText,
-    streamingReasoning: liveState.streamingReasoning,
     error: liveState.agentRunError,
   })
   return `<div class="chat-layout"><div class="chat-stream" data-testid="agent-timeline" role="log" aria-live="polite">${timeline}</div><form class="composer" id="composer" data-testid="agent-composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送</span><button type="submit">发送</button></div></form></div>`
@@ -1340,7 +1330,6 @@ function bindChat() {
     liveState.agentRunActive = true
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
-    liveState.streamingReasoning = '已发送，正在准备本轮任务。'
     liveState.streamingMessageId = ''
     renderAgentChat({ scrollToBottom: true })
     updateSessionStatus('Agent 处理中')
@@ -1368,7 +1357,6 @@ function bindChat() {
         liveState.agentRunActive = false
         liveState.agentRunError = ''
         liveState.streamingAssistantText = ''
-        liveState.streamingReasoning = ''
         liveState.streamingMessageId = ''
         renderAgentChat({ scrollToBottom: true })
         syncPreviewFrames()
@@ -1379,7 +1367,6 @@ function bindChat() {
       .catch((error) => {
         liveState.agentRunActive = false
         liveState.agentRunError = errorText(error)
-        liveState.streamingReasoning = ''
         renderAgentChat({ scrollToBottom: true })
         updateSessionStatus('Agent 执行失败')
         showToast(`Agent 执行失败：${errorText(error)}`)

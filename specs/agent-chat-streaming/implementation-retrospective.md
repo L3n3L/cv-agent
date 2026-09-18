@@ -32,9 +32,9 @@ DeepSeek API 的 `reasoning_content` 确实是可流式返回的字符串，但�
 
 - drain provider reasoning stream，避免阻塞 Agent；
 - 不把 reasoning token 原样推送给浏览器；
-- 用工具阶段、验证结果和当前动作生成可解释的 `reasoningSummary`；
-- 浏览器将摘要显示为可折叠的「思路摘要」，内容按 SSE 事件实时替换；
-- 运行完成后，摘要继续从持久化 workflow event 回放。
+- 用工具阶段、验证结果和当前动作生成可解释的 `reasoningSummary`，仅作为后端审计/调试字段；
+- 浏览器不单独渲染“思路摘要”或“下一步”块，避免把系统状态和用户对话重复铺开；
+- 用户只看到真实工具调用组、工具状态和最终 Agent 回答。
 
 如果以后产品要展示模型厂商明确提供的“安全 reasoning summary”而非 chain-of-thought，可以在同一事件契约中增加 provider adapter，不改变前端布局。
 
@@ -49,7 +49,7 @@ DeepSeek API 的 `reasoning_content` 确实是可流式返回的字符串，但�
 | `assistant_message_finished` | 标记回答段结束 |
 | `toolCallId` | 将同名工具的多次调用分别配对，禁止合并成一行 |
 | `phase` | 当前生产阶段，如读取、检查、渲染、验收 |
-| `reasoningSummary` | 可回放的安全思路摘要，不是私有推理原文 |
+| `reasoningSummary` | 后端审计用的安全过程摘要，不是私有推理原文；默认不单独占用聊天视觉层 |
 
 后端优先调用 `deepagents` v3 `streamEvents(..., { version: "v3" })`；没有该能力的测试 Agent 继续走 `invoke` 兼容路径。工具生命周期仍由 `runResumeTool` 发出，避免框架工具事件和 CVAgent canonical event 重复。`assistant_delta` 只走实时 SSE，不逐 token 写磁盘；最终 assistant message、工具事件和阶段摘要仍会持久化，避免长回答造成大量文件写入并挤掉审计时间线。
 
@@ -60,10 +60,8 @@ Agent 时间线顺序固定为：
 ```text
 用户消息
 → 本轮简历制作
-  → 思路摘要（一行，可展开）
-  → 工具调用（一行一个，可展开）
+  → 工具调用组（一行，可展开）
 → Agent Markdown 回答（增量渲染）
-→ 下一步
 ```
 
 规则：
@@ -71,8 +69,8 @@ Agent 时间线顺序固定为：
 1. 工具调用默认收起，只显示状态、名称和耗时；失败项默认展开；
 2. 同一工具重复调用按 `toolCallId` 拆成独立行，保持真实顺序；
 3. Agent 回答用现有安全 Markdown renderer 增量渲染；
-4. 思路摘要使用弱化的左边线，不使用蓝色正文或大卡片；
-5. 会话恢复只回放最终消息和已持久化的 workflow 摘要/工具事件，不伪造仍在运行的流；
+4. 初始化、自动 A4 测量和后台验收事件只进入审计，不创建聊天工具组；只有真正的 `agent_run_started` 才进入用户时间线；
+5. 会话恢复只回放最终消息和已持久化的工具事件，不伪造仍在运行的流；
 6. 流断开时，最终 session 状态和已写入事件仍可恢复，下一轮继续走现有锁和状态机；前端收到 `agent_run_finished` 后重新读取 session 快照，补齐最终回答和上下文。
 
 ## 5. 已实现文件
@@ -81,7 +79,7 @@ Agent 时间线顺序固定为：
 - `backend/src/server.js`：把增量回答、阶段摘要和工具身份加入 SSE/持久化事件；
 - `backend/src/core/tool-runner.js`：为每次工具调用生成 `toolCallId`；
 - `backend/src/core/session-store.js`：允许安全持久化增量字段和思路摘要；
-- `frontend/agent-chat.js`：线性时间线、独立工具行、可折叠思路摘要和 Markdown 增量回答；
+- `frontend/agent-chat.js`：线性时间线、真实工具调用组、Markdown 增量回答；
 - `frontend/app.js`：订阅并消费 SSE 增量状态；
 - `frontend/styles.css`：保持 Codex 风格的黑灰、细边线和低装饰呈现。
 

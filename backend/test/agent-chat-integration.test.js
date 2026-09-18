@@ -216,6 +216,14 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     const saved = await jsonRequest(`${base}/api/agent/save`, { sessionId, name: 'test-version', confirm: true })
     assert.equal(saved.response.status, 200)
     assert.equal(saved.body.state, TASK_STATES.SAVED)
+    assert.deepEqual(saved.body.version.templateSnapshot, {
+      templateId: 'campus-standard',
+      revision: 1,
+      snapshotPath: null,
+      fingerprint: saved.body.version.templateSnapshot.fingerprint,
+      immutable: true,
+    })
+    assert.match(saved.body.version.templateSnapshot.fingerprint, /^[a-f0-9]{16}$/)
     assert.equal(await fs.readFile(path.join(workspaceRoot, 'resume.md'), 'utf8'), '# 测试候选人\n\n## 教育经历\n\n测试大学 · 计算机科学\n\n## 项目经历\n\n- 完成可重复的简历制作测试。\n')
 
   } finally {

@@ -6,6 +6,10 @@
     resume_check: '检查简历内容',
     template_list: '读取模板库',
     template_select: '切换简历模板',
+    template_generate: '生成模板候选',
+    template_save: '保存工作区模板',
+    template_versions: '读取模板修订',
+    template_restore: '恢复模板修订',
     workspace_materials_list: '读取工作区材料',
     presentation_update: '调整版式参数',
     resume_write: '写入隔离草稿',
@@ -58,6 +62,10 @@
     occupancy: '页面占用',
     blockerCount: '阻断数',
     createdAsCopy: '已创建副本',
+    revision: '修订号',
+    persisted: '已保存',
+    restoredFrom: '恢复来源',
+    selected: '当前会话已切换',
   }
 
   function escapeHtml(value) {

@@ -852,7 +852,7 @@ async function handleSave(request, response, options) {
       session.lastError = null
       await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.SAVE_CONFIRMED, state: session.status, versionId: saved.id, ...contextFields(session.taskRef.current.context) })
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.SAVE_CONFIRMED, { ...session.taskRef.current, sessionId: session.sessionId }, { versionId: saved.id, versionName: saved.name })
-      sendJson(response, 200, { ok: true, sessionId, state: session.taskRef.current.state, version: { id: saved.id, name: saved.name, resumePath: saved.resumePath, contentVersion: saved.contentVersion, templateRevision: saved.templateRevision } })
+      sendJson(response, 200, { ok: true, sessionId, state: session.taskRef.current.state, version: { id: saved.id, name: saved.name, resumePath: saved.resumePath, contentVersion: saved.contentVersion, templateRevision: saved.templateRevision, templateSnapshot: saved.templateSnapshot } })
     })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'SAVE_FAILED'), errorMessage: String(error?.message || error) }

@@ -29,7 +29,6 @@ const liveState = {
   measurement: null,
   measurementPending: false,
   measuredRenderKey: '',
-  continuationKey: '',
   agentEvents: [],
   agentRunActive: false,
   agentRunError: '',
@@ -53,6 +52,21 @@ function templatePreviewUrl(templateId) {
   return `/api/template-preview?sessionId=${encodeURIComponent(activeSessionId)}&templateId=${encodeURIComponent(templateId)}&t=${encodeURIComponent(liveState.renderId || 'draft')}`
 }
 
+function applyTemplateContext(context = {}) {
+  if (!context?.templateId) return
+  liveState.templateId = context.templateId
+  const known = liveState.templates.find((template) => template.id === liveState.templateId)
+  if (known) liveState.templateName = known.name || known.id
+}
+
+async function refreshWorkspaceTemplates({ rerender = false } = {}) {
+  if (!liveState.workspaceId) return
+  const { body } = await api.get(`/api/templates?workspaceId=${encodeURIComponent(liveState.workspaceId)}`)
+  liveState.templates = Array.isArray(body.templates) ? body.templates : []
+  applyTemplateContext({ templateId: liveState.templateId })
+  if (rerender && currentRoute === 'templates') await renderTemplates()
+}
+
 function connectWorkflowEvents() {
   if (!liveState.sessionId || typeof window.EventSource !== 'function') return
   if (workflowEventSessionId === liveState.sessionId && workflowEventSource) return
@@ -69,6 +83,9 @@ function connectWorkflowEvents() {
       liveState.agentRunError = ''
     }
     if (payload.event === 'agent_run_finished') liveState.agentRunActive = false
+    if (payload.event === 'tool_call_succeeded' && ['template_copy', 'template_save', 'template_restore'].includes(payload.toolName)) {
+      void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
+    }
     renderAgentChat({ scrollToBottom: true })
   })
 }
@@ -97,20 +114,28 @@ function measurePreviewFrame(frame, identity = {}) {
     liveState.measurementPending = true
     void api.post('/api/agent/measure', { sessionId, renderId, pageCount, occupancy, overflow })
       .then(({ body }) => {
+        // A later template/content mutation can complete while this browser
+        // callback is in flight. Never let an old render overwrite the
+        // current task state or start a follow-up Agent run.
+        if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
         liveState.measuredRenderKey = key
         liveState.measurement = body.measurement || null
         liveState.workflowState = body.state || liveState.workflowState
         const blockers = body.verification?.blockers || []
         liveState.blockerCount = blockers.length
         updateHeader()
+        // Keep the sidebar's persisted-session summary in step with the
+        // browser measurement. Without this refresh the central workbench
+        // could correctly unlock "保存正式版" while the selected session
+        // still looked blocked in the left navigation.
+        void loadSessionsForWorkspace()
         const requiresInitialIntake = blockers.includes('尚未完成首次信息收集')
         if (requiresInitialIntake) showToast('请打开 Agent，补充基本信息后继续制作')
-        if (body.state === 'needs_revision' && !requiresInitialIntake && liveState.continuationKey !== key) {
-          liveState.continuationKey = key
-          void continueAgentAfterMeasurement(key, blockers)
-        }
+        if (body.state === 'needs_revision' && !requiresInitialIntake) showToast('真实 A4 测量已回传；请确认后再让 Agent 继续调整')
       })
-      .catch((error) => showToast(`预览测量失败：${errorText(error)}`))
+      .catch((error) => {
+        if (frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId) showToast(`预览测量失败：${errorText(error)}`)
+      })
       .finally(() => {
         if (measurementInFlightKey === key) measurementInFlightKey = ''
         liveState.measurementPending = false
@@ -202,28 +227,6 @@ function syncTemplatePreviewFrames() {
     frame.dataset.previewKey = previewKey
     frame.src = src
   })
-}
-
-async function continueAgentAfterMeasurement(renderKey, blockers) {
-  const [sessionId, renderId] = renderKey.split(':')
-  if (!sessionId || !renderId || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
-  showToast('排版未通过，Agent 正在继续调整…')
-  try {
-    const { body } = await api.post('/api/agent/continue', { sessionId, renderId, message: `真实 A4 测量已回传，当前验收未通过。请继续处理当前草稿，不能假设指标已经通过；根据这些阻断项调整内容或版式，重新检查并重新渲染。${blockers.length ? `\n阻断项：\n- ${blockers.join('\n- ')}` : ''}` })
-    if (liveState.sessionId !== sessionId) return
-    liveState.workflowState = body.state || liveState.workflowState
-    liveState.renderId = body.context?.renderId || liveState.renderId
-    liveState.measuredRenderKey = ''
-    liveState.continuationKey = ''
-    syncPreviewFrames()
-    updateHeader()
-    const assistantMessage = body.assistantText || 'Agent 已根据真实排版结果继续处理。'
-    liveState.agentRunActive = false
-    appendAgentResponse(assistantMessage)
-  } catch (error) {
-    liveState.continuationKey = ''
-    showToast(`Agent 续跑失败：${errorText(error)}`)
-  }
 }
 
 function currentSessionData() {
@@ -369,7 +372,6 @@ async function restoreSession(sessionId) {
     liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
     liveState.measurement = session.taskRef?.current?.measurements || null
     liveState.measuredRenderKey = liveState.measurement && liveState.renderId ? `${liveState.sessionId}:${liveState.renderId}` : ''
-    liveState.continuationKey = ''
     updateConnectionStatus()
     renderSessionList([session])
     renderRoute(currentRoute)
@@ -421,7 +423,6 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
-    liveState.continuationKey = ''
     activeSessionId = liveState.sessionId
     await loadSessionsForWorkspace()
     updateConnectionStatus()
@@ -770,13 +771,14 @@ async function saveDraftAndRender(content) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
-    liveState.continuationKey = ''
     syncPreviewFrames()
     updateHeader()
-    $('#editorState').textContent = '已渲染 · 待测量'
+    const editorState = $('#editorState')
+    if (editorState) editorState.textContent = '已渲染 · 待测量'
     showToast('草稿已保存并重新渲染')
   } catch (error) {
-    $('#editorState').textContent = '渲染失败'
+    const editorState = $('#editorState')
+    if (editorState) editorState.textContent = '渲染失败'
     showToast(`保存或渲染失败：${errorText(error)}`)
   } finally {
     if (button) button.disabled = false
@@ -805,7 +807,6 @@ async function applyPresentationTuning(valuesOverride = null) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
-    liveState.continuationKey = ''
     syncPreviewFrames()
     updateHeader()
     const panel = $('#presentationPanel')
@@ -896,10 +897,11 @@ async function applyTemplate(template, button) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
-    liveState.continuationKey = ''
-    updateTemplateCards()
-    syncPreviewFrames()
-    updateHeader()
+    // Template thumbnails are deliberately excluded from measurement: they
+    // are many lazy iframes, not the one canonical A4 artifact. Move to the
+    // workbench so the newly rendered template is shown in its real preview
+    // iframe and the browser can submit exactly one measurement for it.
+    renderRoute('workbench')
     showToast(`已应用「${liveState.templateName}」，正在等待真实 A4 测量`)
   } catch (error) {
     showToast(`模板应用失败：${errorText(error)}`)
@@ -1112,12 +1114,12 @@ function bindChat() {
     void api.post('/api/agent/run', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
       .then(({ body }) => {
         liveState.workflowState = body.state || liveState.workflowState
+        applyTemplateContext(body.context)
         const previousRenderId = liveState.renderId
         liveState.renderId = body.context?.renderId || liveState.renderId
         if (liveState.renderId !== previousRenderId) {
           liveState.measurement = null
           liveState.measuredRenderKey = ''
-          liveState.continuationKey = ''
         }
         if (body.draft?.contentVersion) liveState.draftContent = $('#resumeEditor')?.value || liveState.draftContent
         const assistantMessage = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
@@ -1127,6 +1129,7 @@ function bindChat() {
         renderAgentChat({ scrollToBottom: true })
         syncPreviewFrames()
         updateHeader()
+        void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
         void loadSessionsForWorkspace()
       })
       .catch((error) => {

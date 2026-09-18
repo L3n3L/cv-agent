@@ -113,6 +113,20 @@ test('explicit template selection can replace the previous template identity', (
   assert.equal(next.context.renderId, null)
 })
 
+test('template selection returns a blocked draft to drafting so it can be rendered again', () => {
+  let current = createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume-1', templateId: 'campus-standard', templateRevision: 'campus-standard@1' })
+  current = recordDraftWrite(current, { workspaceId: 'workspace-1', resumeId: 'resume-1', contentVersion: 'content-v1', intakeComplete: true })
+  current.state = TASK_STATES.BLOCKED
+  current.blockers = ['没有当前内容和模板匹配的测量结果']
+
+  const next = recordTemplateChange(current, { workspaceId: 'workspace-1', resumeId: 'resume-1', templateId: 'browser-link-verify', templateRevision: 'browser-link-verify@1' })
+
+  assert.equal(next.state, TASK_STATES.DRAFTING)
+  assert.equal(next.context.contentVersion, 'content-v1')
+  assert.equal(next.context.templateId, 'browser-link-verify')
+  assert.equal(next.context.renderId, null)
+})
+
 test('workspace preview listing is deterministic and excludes isolated CVAgent artifacts', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-previews-'))
   await fs.mkdir(path.join(workspaceRoot, 'companies', 'alpha'), { recursive: true })
@@ -358,6 +372,20 @@ test('migrated template catalog and presentation tuning are first-class tools', 
     const copied = await tools.find((item) => item.name === 'template_copy').invoke({ sourceTemplateId: 'campus-standard', newTemplateId: 'campus-test-copy', name: 'Campus Test Copy' })
     assert.equal(copied.createdAsCopy, true)
     assert.match(await fs.readFile(path.join(workspaceRoot, 'templates', 'campus-test-copy.css'), 'utf8'), /data-template-id="campus-test-copy"/)
+    const generated = await tools.find((item) => item.name === 'template_generate').invoke({ brief: { id: 'agent-generated-template', name: 'Agent Generated Template', audience: 'product', family: 'business-timeline' } })
+    assert.equal(generated.valid, true)
+    assert.equal(generated.persisted, false)
+    await assert.rejects(() => fs.stat(path.join(workspaceRoot, 'templates', 'agent-generated-template.json')), { code: 'ENOENT' })
+    const savedTemplate = await tools.find((item) => item.name === 'template_save').invoke({ template: generated.template, confirmedByUser: true })
+    assert.equal(savedTemplate.revision, 1)
+    const templateVersions = await tools.find((item) => item.name === 'template_versions').invoke({ templateId: 'agent-generated-template' })
+    assert.deepEqual(templateVersions.versions.map((item) => item.id), ['0001'])
+    await tools.find((item) => item.name === 'template_select').invoke({ templateId: 'agent-generated-template' })
+    const restoredTemplate = await tools.find((item) => item.name === 'template_restore').invoke({ templateId: 'agent-generated-template', versionId: '0001', confirmedByUser: true })
+    assert.equal(restoredTemplate.revision, 2)
+    assert.equal(restoredTemplate.selected, true)
+    assert.equal(taskRef.current.context.templateRevision, 'agent-generated-template@2')
+    assert.equal(taskRef.current.context.renderId, null)
     await tools.find((item) => item.name === 'template_select').invoke({ templateId: 'business-ledger-plus' })
     assert.equal(taskRef.current.context.templateId, 'business-ledger-plus')
     await tools.find((item) => item.name === 'resume_write').invoke({ content: '# Resume\n\n## Experience\n\n- Evidence\n' })

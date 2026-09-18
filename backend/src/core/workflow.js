@@ -63,7 +63,13 @@ export function recordTemplateChange(task, artifact = {}) {
   next.artifacts = { contentVersion: next.context.contentVersion, templateRevision: next.context.templateRevision, renderId: null }
   next.measurements = null
   next.blockers = []
-  if ([TASK_STATES.RENDERED, TASK_STATES.MEASURED, TASK_STATES.ACCEPTED, TASK_STATES.NEEDS_REVISION].includes(next.state)) next.state = TASK_STATES.DRAFTING
+  // A template is a render dependency, not a content reset. Any task that
+  // already has a draft must therefore return to drafting after an explicit
+  // template change, including a previously blocked task. Leaving `blocked`
+  // unchanged made the gallery unusable after a failed/unfinished A4 check:
+  // resume_render correctly rejected that state as DRAFT_REQUIRED even though
+  // the isolated draft still existed.
+  if (next.context.contentVersion) next.state = TASK_STATES.DRAFTING
   return next
 }
 

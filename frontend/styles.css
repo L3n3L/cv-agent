@@ -415,3 +415,9 @@ body { letter-spacing:-.005em; }
 @media (min-width:961px) and (max-width:1100px) {
   .app-shell.assistant-open .workbench-split { grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr); }
 }
+
+/* The desktop workbench owns the remaining route height; do not leave a footer-sized void below it. */
+@media (min-width:901px) {
+  .app-shell:not(.assistant-open) .workbench-view { padding-bottom:0; }
+  .app-shell:not(.assistant-open) .workbench-split { height:calc(100dvh - 85px); }
+}

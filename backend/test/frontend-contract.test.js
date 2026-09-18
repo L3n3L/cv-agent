@@ -19,6 +19,7 @@ test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height pee
   assert.match(css, /\.editor-foot \{ padding:8px 16px 0; border-top:1px solid var\(--workbench-weak\); \}/)
   assert.match(css, /\.direct-preview-stage \{ padding:8px; background:var\(--canvas\); \}/)
   assert.match(css, /\.direct-preview-foot \{ padding:8px 16px; border-top-color:var\(--workbench-weak\); \}/)
+  assert.match(css, /@media \(min-width:901px\) \{[\s\S]*?\.app-shell:not\(\.assistant-open\) \.workbench-view \{ padding-bottom:0; \}[\s\S]*?\.app-shell:not\(\.assistant-open\) \.workbench-split \{ height:calc\(100dvh - 85px\); \}/)
   assert.match(css, /\.resize-handle \{[\s\S]*?width:1px; min-width:1px;/)
   assert.match(css, /\.resize-handle::before \{[\s\S]*?left:0; width:1px;[\s\S]*?opacity:1;/)
   assert.match(css, /\.resize-handle::after \{[\s\S]*?left:-4px; width:9px;/)

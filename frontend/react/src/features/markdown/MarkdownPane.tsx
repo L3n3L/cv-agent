@@ -8,12 +8,12 @@ export type MarkdownPaneOptions = {
   onApply: (content: string) => void | Promise<void>
 }
 
-export function MarkdownPane({ resumePath, content, status, onApply }: MarkdownPaneOptions) {
+export function MarkdownPane({ content, status, onApply }: MarkdownPaneOptions) {
   const [value, setValue] = useState(content)
 
   return (
     <div className="editor-layout">
-      <PaneHeader title={resumePath || 'resume.md'} subtitle="当前会话草稿" status={status} variant="editor" />
+      <PaneHeader title="Markdown 编辑" status={status} variant="editor" />
       <textarea
         id="resumeEditor"
         spellCheck={false}
@@ -22,7 +22,7 @@ export function MarkdownPane({ resumePath, content, status, onApply }: MarkdownP
         onChange={(event) => setValue(event.target.value)}
       />
       <div className="editor-foot">
-        <span>Markdown 草稿</span>
+        <span aria-hidden="true" />
         <button className="primary-small" id="editorApply" type="button" onClick={() => void onApply(value)}>应用并重新渲染</button>
       </div>
     </div>

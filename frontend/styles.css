@@ -418,9 +418,10 @@ body { letter-spacing:-.005em; }
 
 /* The desktop workbench owns the remaining route height; do not leave a footer-sized void below it. */
 @media (min-width:901px) {
-  .app-shell:not(.assistant-open) .workbench-view { padding-right:0; padding-bottom:0; padding-left:0; }
-  .app-shell:not(.assistant-open) .workbench-split { height:calc(100dvh - 85px); }
-  .app-shell.assistant-open .workbench-split { height:calc(100dvh - 71px); }
+  .app-shell:not(.assistant-open) .route-view { padding:0; }
+  .app-shell:not(.assistant-open) .workbench-view { padding:0; }
+  .app-shell:not(.assistant-open) .workbench-split { height:calc(100dvh - var(--shell-header-height)); }
+  .app-shell.assistant-open .workbench-split { height:calc(100dvh - var(--shell-header-height)); }
 }
 
 /* Shared React pane header contract; legacy classes remain as compatibility hooks during migration. */
@@ -430,3 +431,47 @@ body { letter-spacing:-.005em; }
 .pane-header-status { margin-top:0 !important; white-space:nowrap; }
 .editor-pane > #editorPaneMount { min-width:0; min-height:0; height:100%; }
 .direct-preview-pane > #a4PaneMount { display:flex; min-width:0; min-height:0; height:100%; flex:1; flex-direction:column; }
+
+/* One shared geometry contract for the shell rail and every workbench pane header. */
+:root { --shell-header-height:58px; --pane-header-height:58px; --pane-inline-padding:16px; }
+.sidebar { padding-top:0; }
+.sidebar > .brand-lockup {
+  display:flex;
+  box-sizing:border-box;
+  width:100%;
+  height:var(--shell-header-height);
+  min-height:var(--shell-header-height);
+  flex:0 0 var(--shell-header-height);
+  flex-direction:row;
+  align-items:flex-start;
+  justify-content:space-between;
+  margin:0;
+  padding:12px var(--pane-inline-padding) 10px;
+}
+.sidebar > .brand-lockup .pane-header-copy { min-width:0; }
+.sidebar > .brand-lockup .pane-header-copy > b { margin:0; color:var(--ink); font-size:20px; font-weight:600; letter-spacing:-.05em; line-height:1.25; }
+.sidebar > .brand-lockup .pane-header-actions { min-width:0; }
+.sidebar > .workspace-switcher { height:var(--pane-header-height); min-height:var(--pane-header-height); margin-top:0; padding:12px 4px 10px; align-items:flex-start; }
+.sidebar > .workspace-switcher .workspace-copy b { margin-top:0; color:var(--ink); font-size:13px; font-weight:600; }
+.sidebar > .workspace-switcher .workspace-symbol,.sidebar > .workspace-switcher .chevron { margin-top:1px; }
+.main-stage > .route-header,
+.assistant-drawer > .drawer-header { box-sizing:border-box; height:var(--shell-header-height); min-height:var(--shell-header-height); margin:0; padding:12px var(--pane-inline-padding) 10px; }
+.main-stage > .route-header { align-items:flex-start; }
+.main-stage > .route-header .route-heading > p { display:none; }
+.assistant-drawer > .drawer-header { border-bottom:1px solid var(--line); }
+.assistant-drawer > .drawer-header { align-items:flex-start; }
+.editor-head,.direct-preview-head { box-sizing:border-box; height:var(--pane-header-height); min-height:var(--pane-header-height); align-items:flex-start; padding:12px var(--pane-inline-padding) 10px; }
+.editor-head { border-bottom-color:var(--workbench-seam); }
+.direct-preview-head { border-bottom-color:var(--workbench-seam); }
+.editor-head .pane-header-copy > b,.direct-preview-head .pane-header-copy > b { color:var(--ink); font-size:13px; font-weight:600; }
+.pane-header--preview .pane-header-copy > b { margin:0; }
+.pane-header--preview .preview-actions > span { display:none; }
+.pane-header--preview .preview-actions { margin-top:0; }
+.pane-header-data-anchor { display:none!important; }
+.assistant-drawer .drawer-header h2,
+.assistant-drawer .drawer-header b { margin:0; color:#171b20; font-size:17px; font-weight:600; letter-spacing:-.03em; }
+.assistant-drawer .drawer-header .ghost-button { padding:0; border:0; color:#7b838c; background:transparent; font-size:10px; }
+.assistant-drawer .drawer-header .ghost-button:hover { color:#343a41; background:transparent; }
+.assistant-drawer #assistantContent { height:calc(100% - var(--shell-header-height)); }
+.app-shell.assistant-open .assistant-drawer { padding:0; }
+.app-shell.assistant-open .assistant-drawer #assistantContent { box-sizing:border-box; padding:0 var(--pane-inline-padding); }

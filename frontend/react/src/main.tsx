@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import '../../styles.css'
+import { PaneHeader } from './components/PaneHeader'
 import { mountA4Pane, mountMarkdownPane, unmountLegacyReactPanes } from './legacy-bridge'
 import type { MarkdownPaneOptions } from './features/markdown/MarkdownPane'
 import type { A4PaneOptions } from './features/preview/A4Pane'
@@ -37,20 +38,18 @@ function Icon({ name }: { name: IconName }) {
 function Sidebar() {
   return (
     <aside className="sidebar" aria-label="CVAgent 导航">
-      <div className="brand-lockup"><strong>CVAgent</strong><span>简历制作工作台</span></div>
-      <button className="sidebar-toggle" id="sidebarToggle" type="button" aria-label="收起导航栏" aria-expanded="true"><span aria-hidden="true">‹</span><small>收起</small></button>
-      <button className="workspace-switcher" id="workspaceSwitcher" type="button" aria-expanded="false">
-        <span className="workspace-symbol" aria-hidden="true"><Icon name="folder" /></span>
-        <span className="workspace-copy"><small>当前工作区</small><b id="workspaceLabel">选择工作区</b></span>
-        <span className="chevron" aria-hidden="true">⌄</span>
-      </button>
+      <PaneHeader
+        variant="brand"
+        title="CVAgent"
+        actions={<button className="sidebar-toggle" id="sidebarToggle" type="button" aria-label="收起导航栏" aria-expanded="true"><span aria-hidden="true">‹</span><small>收起</small></button>}
+      />
+      <PaneHeader variant="workspace" id="workspaceSwitcher" ariaExpanded={false} title="选择工作区" titleId="workspaceLabel" leading={<Icon name="folder" />} trailing="⌄" />
       <div className="workspace-menu" id="workspaceMenu" hidden>
         <div id="workspaceOptions"><small>正在读取工作区…</small></div>
         <button type="button" id="workspaceImportButton">选择简历工作区<small>从本地目录导入 Markdown、模板和素材</small></button>
         <input id="workspaceFiles" type="file" {...{ webkitdirectory: '', directory: '' }} multiple hidden />
       </div>
       <nav className="primary-nav" aria-label="简历制作模块">
-        <p className="nav-caption">简历制作</p>
         {navItems.map((item) => <button className={`nav-item${item.route === 'workbench' ? ' active' : ''}`} data-route={item.route} type="button" key={item.route}><span className="nav-icon" aria-hidden="true"><Icon name={item.icon} /></span><span>{item.label}</span>{item.route === 'checks' && <em className="nav-badge" id="checksBadge" hidden />}</button>)}
       </nav>
       <section className="session-section" aria-label="当前工作区会话">
@@ -65,10 +64,19 @@ function Sidebar() {
 function MainStage() {
   return (
     <main className="main-stage">
-      <header className="route-header">
-        <div className="route-heading"><div className="eyebrow" id="routeKicker">简历工作台</div><div className="route-title-line"><h1 id="routeTitle">选择工作区</h1><span className="status-pill" id="routeStatus">等待连接</span></div><p id="routeMeta">选择工作区后加载 resume.md</p></div>
-        <div className="route-actions" id="routeActions"><button className="ghost-button" id="workbenchAssistantButton" type="button">打开 Agent</button></div>
-      </header>
+      <PaneHeader
+        variant="route"
+        eyebrow=""
+        eyebrowId="routeKicker"
+        title="选择工作区"
+        titleId="routeTitle"
+        subtitle=""
+        subtitleId="routeMeta"
+        status=""
+        statusId="routeStatus"
+        actionsId="routeActions"
+        actions={<button className="ghost-button" id="workbenchAssistantButton" type="button">打开 Agent</button>}
+      />
       <section className="route-view" id="routeView" aria-live="polite"><div className="route-content" id="routeContent" /></section>
     </main>
   )
@@ -77,7 +85,7 @@ function MainStage() {
 function AgentPane() {
   return (
     <aside className="assistant-drawer" id="assistantDrawer" aria-label="Agent 助手面板" aria-hidden="true" hidden>
-      <div className="drawer-header"><div><h2>Agent</h2></div><button className="ghost-button" id="drawerClose" type="button">收起</button></div>
+      <PaneHeader variant="agent" title="Agent" actions={<button className="ghost-button" id="drawerClose" type="button">收起</button>} />
       <div className="assistant-context" title="仅作用于当前会话"><span>选择工作区后开始对话</span></div>
       <div id="assistantContent" />
     </aside>

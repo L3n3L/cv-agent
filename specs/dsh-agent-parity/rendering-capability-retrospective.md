@@ -1,14 +1,14 @@
 # CVAgent ↔ DSH 简历模板渲染能力对接复盘
 
 更新：2026-09-18  
-状态：渲染内核基本对齐，模板生态与自动调参尚未达到完整平替  
+状态：渲染内核、主题生态、layoutSpec 和受限自动调参已接入；完整视觉平替仍以浏览器矩阵为准
 基线提交：`59a197a feat: align presentation tuning with DSH workflow`
 
 ## 1. 复盘结论
 
-本次审计不能把当前 CVAgent 描述为“已经完整复刻 DSH 插件能力”。准确结论是：
+本次审计不能把 CVAgent 描述为“已经完成像素级复刻 DSH 插件”。准确结论是：
 
-> CVAgent 已基本迁移 DSH 的简历渲染内核和 A4 验收能力，但模板生成生态、主题家族和自动调参仍存在明确缺口；在缺口补齐并通过真实浏览器矩阵验收前，不得宣称能力完全平替。
+> CVAgent 已迁移 DSH 的简历渲染内核、A4 验收、17 个主题家族、结构化 layoutSpec 和受限自动调参；模板逐项视觉结果仍必须通过真实浏览器矩阵验收，不能只凭后端测试宣称像素级平替。
 
 CVAgent 的独立 HTTP、Session、工作区和 Agent 边界继续保留，不直接复制 DSH 的 `ctx.tools`、宿主工作区、MCP Server 或插件 UI。对齐的是简历领域能力和结果契约。
 
@@ -97,38 +97,13 @@ CVAgent 当前已迁移 DSH 的主要内置模板与 CSS：
 
 模板 CSS 已使用 CVAgent 命名空间适配，并增加独立的 A4 页面尺寸和测量契约。结构上保持 DSH 的视觉基准，但仍需要逐模板真实浏览器截图确认，不能仅凭源码相似度宣称像素一致。
 
-## 4. 尚未达到完整平替的能力
+## 4. 本轮已补齐的能力
 
-### 4.1 主题家族不完整
+### 4.1 canonical 主题家族
 
-DSH 的 `theme-system.js` 当前有 17 个主题家族；CVAgent 的 `template-generation.js` 当前只有 8 个 `FAMILY_PROFILES`。
+`backend/src/migrated/resume-engine/theme-system.js` 现在是唯一主题来源，已包含 DSH 的 17 个家族及其 layout、typography、spacing、visual、moduleTypes 和 block preset。`template-generation.js` 与 `template_family_list` 均消费同一来源，未知 family 不会继续维护第二份静默回退表。
 
-CVAgent 已有：
-
-- `campus-clear`
-- `engineering-dense`
-- `split-focus`
-- `editorial-quiet`
-- `portfolio-grid`
-- `business-timeline`
-- `magazine-editorial`
-- `geek-lab`
-
-尚缺：
-
-- `mono-terminal`
-- `avatar-profile`
-- `impact-board`
-- `operation-block`
-- `career-chronicle`
-- `simple-typographic`
-- `heading-stack`
-- `case-study`
-- `social-profile`
-
-因此，当前 Agent 请求某些 DSH 主题家族时可能回退到 `campus-clear`，这不是完整平替，必须修正为显式拒绝或完整支持，不能静默降级。
-
-### 4.2 AI 模板候选没有完整返回 DSH 的 layoutSpec
+### 4.2 AI 模板候选的 layoutSpec 已接入渲染
 
 DSH 的 `generateTemplateCandidate()` 不只生成颜色和字体，还会返回：
 
@@ -139,20 +114,16 @@ DSH 的 `generateTemplateCandidate()` 不只生成颜色和字体，还会返回
 - 可被 Renderer 消费的 `layoutSpec`；
 - 主题家族和模块预设说明。
 
-CVAgent 当前的 `generateTemplateCandidate()` 主要返回模板对象、质量审计和下一步建议，没有完整返回 DSH 同等级的 `layoutSpec` 与 block preset 结果。
+`generateTemplateCandidate()` 现在同时返回并写入模板快照的 `layoutSpec`，包含 main/side regions、stack/split/grid IR、模块顺序、语义 block type 和 preset。`renderResumeDraft()` 会读取已保存模板的 layoutSpec，并把它传给 `assembleResumeSections()` 与 `buildPreviewDocument()`，因此候选结构不再只是元数据，而是实际参与渲染。
 
-影响：AI 可以生成一个看起来合法的模板对象，但新模板的模块语义、布局结构和主题预设可能没有完整落到渲染器上。这个缺口必须补齐后，才算“AI 能生成全新模板”，而不是“AI 生成一组模板元数据”。
-
-### 4.3 Agent 工具缺少主题列表和自动调参
+### 4.3 Agent 主题列表和自动调参已接入
 
 DSH 业务契约中存在：
 
 - `template_family_list`：列出主题家族和可用模块预设；
 - `template_autotune`：基于真实 metrics 做受限的 1～3 轮自动调参。
 
-CVAgent 当前有 `template_generate`、`template_save`、`template_versions`、`template_restore`、`presentation_update` 和 `presentation_suggest`，但没有完整的 `template_family_list` 和 `template_autotune`。
-
-`presentation_suggest` 只能提出建议，不能替代 DSH 的确定性自动调参能力。后续应将自动调参实现为受限、可解释、可回滚的 mutation，并继续要求重新渲染、重新测量和 finalize。
+CVAgent 现在提供 `template_family_list` 与 `template_autotune`。自动调参只接受当前 `renderId` 的真实 measurement，一次最多执行一个 round、最多支持三轮；它只修改当前简历 presentation，不修改正文或可复用模板。发生修改后会提升 presentation revision、使旧 render 失效，并明确要求重新 `resume_check → resume_render → resume_metrics → resume_finalize`。
 
 ### 4.4 不能把源码相似度当作视觉验收
 
@@ -168,19 +139,18 @@ CSS 文件和 renderer 经过命名空间适配后存在结构相似性，但以
 
 没有截图和当前 `renderId` metrics 的结果，只能称为代码迁移完成，不能称为渲染能力验收完成。
 
-## 5. 后续补齐方案
+## 5. 后续验收与仍需补齐的部分
 
-### 阶段 A：建立 canonical theme system
+### 已完成的实现阶段
 
-- 新增 CVAgent 自己的 `theme-system.js`；
-- 迁移 DSH 的 17 个主题家族和 block preset 语义；
-- 不迁移 DSH workspace、MCP、宿主 UI 和全局状态；
-- `template-generation.js` 只消费这一份主题来源，禁止继续维护第二份家族定义；
-- `template_family_list` 直接返回同一 canonical source。
+- canonical `theme-system.js`：17 个主题家族与 block preset；
+- `template_family_list`：Agent 可读取同一主题来源；
+- `template_generate`：返回 `layoutSpec`、主题信息与模块预设；
+- 模板保存/加载：layoutSpec 随模板 revision 持久化；
+- renderer：实际消费保存的 layoutSpec；
+- `template_autotune`：受限、可解释、绑定当前 renderId 的 presentation mutation。
 
-### 阶段 B：补齐 AI 模板候选的结构输出
-
-`template_generate` 必须返回：
+`template_generate` 当前返回：
 
 ```text
 brief
@@ -194,17 +164,13 @@ nextSteps
 
 候选仍然只存在内存中。只有用户明确要求创建、保存、替换或应用时，才进入 `template_save`。
 
-### 阶段 C：补齐受限自动调参
+### 仍需完成的验收
 
-迁移 DSH `autotune.js` 的业务语义，但使用 CVAgent 的工具和状态约束：
-
-1. 只接受当前 renderId 的真实 metrics；
-2. 每次最多一个 round，最多连续三轮；
-3. 溢出优先收紧页边距、模块间距，再考虑字号；
-4. 留白过多优先增加字号、模块间距，再考虑页边距；
-5. 每轮都生成新 presentation revision 和新 renderId；
-6. 自动调参不改正文、不覆盖内置模板、不直接保存正式版本；
-7. 每轮都要经过浏览器截图和 finalize。
+1. 17 个主题家族逐个用饱满真实简历渲染；
+2. stack、split、grid 逐个截图并核对真实列宽、分页和留白；
+3. 以真实浏览器触发至少一轮 overflow 和 sparse autotune，记录前后 renderId、metrics、截图；
+4. 验证所有生成模板的 layoutSpec 在 UI 预览、正式渲染和版本恢复后仍一致；
+5. 对照 DSH 的具体 CSS 视觉差异继续修正，而不是把后端 schema 通过当作视觉完成。
 
 ## 6. 能力验收矩阵
 
@@ -232,21 +198,18 @@ nextSteps
 2. 查看 `git status` 和最近提交；
 3. 对照 DSH `lib/theme-system.js`、`lib/template-generation.js`、`lib/autotune.js`；
 4. 确认 CVAgent 没有静默把未知主题回退到默认主题；
-5. 确认 `template_generate` 返回 `layoutSpec`；
+5. 确认 `template_generate` 返回并持久化 `layoutSpec`；
 6. 确认 `template_autotune` 只接受真实当前 metrics；
 7. 运行后端测试、前端构建和真实浏览器截图；
 8. 最后才可以判断是“渲染内核平替”还是“完整模板能力平替”。
 
 ## 8. 当前禁止的表述
 
-在上述缺口补齐之前，不要写：
+在视觉矩阵和真实浏览器证据补齐之前，不要写：
 
 - “CVAgent 已完整复刻 DSH 模板能力”；
-- “所有 DSH 模板家族都已迁移”；
-- “AI 已具备自动调参能力”；
-- “模板生成已经和 DSH 完全一致”；
 - “仅通过单元测试即可证明视觉平替”。
 
 当前准确表述应为：
 
-> CVAgent 已完成 DSH 简历渲染内核、A4 测量和手动 presentation 微调的主体迁移；模板主题生态、候选结构输出和自动调参仍在补齐，后续以真实浏览器验收矩阵为准。
+> CVAgent 已完成 DSH 简历渲染内核、A4 测量、手动 presentation 微调、主题生态、结构化模板生成和受限自动调参接入；最终视觉是否平替仍以真实浏览器验收矩阵为准。

@@ -36,6 +36,21 @@ function sectionHeading(part) {
   return /<h2>([^<]*)<\/h2>/.exec(part)?.[1]?.trim() || ''
 }
 
+function inferModuleFromHeading(heading) {
+  const value = String(heading || '').trim().toLowerCase()
+  return [
+    [/教育|education|academic|school|university/, 'education'],
+    [/技能|skill|technology|tech stack/, 'skills'],
+    [/项目|project|portfolio|case study/, 'projects'],
+    [/实习|工作|经历|experience|work|employment|intern/, 'experience'],
+    [/获奖|奖项|award|honor|certificate/, 'awards'],
+    [/链接|link|github|website|portfolio/, 'links'],
+    [/简介|summary|profile|about|objective/, 'summary'],
+    [/头像|photo|avatar/, 'photo'],
+    [/联系|contact/, 'contact'],
+  ].find(([pattern]) => pattern.test(value))?.[1] || null
+}
+
 function moduleClass(type) {
   return `cvagent-module-${String(type || 'custom-section').replace(/[^a-z0-9-]/gi, '-')}`
 }
@@ -252,22 +267,10 @@ export function assembleResumeSections(html, layoutSpec, templateLayout = null, 
   for (const [index, part] of parts.entries()) {
     if (part.startsWith('<h2>')) {
       const heading = sectionHeading(part)
-      const inferred = [
-        ['教育', 'education'],
-        ['技能', 'skills'],
-        ['项目', 'projects'],
-        ['实习', 'experience'],
-        ['经历', 'experience'],
-        ['获奖', 'awards'],
-        ['链接', 'links'],
-        ['简介', 'summary'],
-        ['头像', 'photo'],
-        ['联系', 'contact'],
-        ['自我评价', 'awards'],
-      ].find(([key]) => heading.includes(key))
-      const block = byHeading.get(heading) || byId.get(heading) || (inferred && byId.get(inferred[1])) || {
-        id: inferred?.[1] || `section-${index + 1}`,
-        type: inferred?.[1] || 'custom-section',
+      const inferredModule = inferModuleFromHeading(heading)
+      const block = byHeading.get(heading) || byId.get(heading) || (inferredModule && byId.get(inferredModule)) || {
+        id: inferredModule || `section-${index + 1}`,
+        type: inferredModule || 'custom-section',
         source: heading,
       }
       const id = sectionParts.some((item) => item.id === block.id) ? `${block.id}-${index + 1}` : block.id

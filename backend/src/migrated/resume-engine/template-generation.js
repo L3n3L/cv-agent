@@ -1,4 +1,5 @@
 import { COMPOSITION_OPTIONS, normalizeCompositionPageSpec, normalizeTemplateSpec, TEMPLATE_DEFAULTS, validateCssText, validateTemplateSpec } from './template-schema.js'
+import { blockPreset, listThemeFamilies, resolveThemeFamily, THEME_FAMILY_IDS } from './theme-system.js'
 
 // This is deliberately a constrained design language. An Agent may describe a
 // template with a Design Brief, but it cannot invent renderer IDs, modules, or
@@ -8,18 +9,8 @@ const LAYOUTS = new Set(['single-column', 'two-column'])
 const DENSITIES = new Set(['compact', 'standard', 'airy'])
 const TONES = new Set(['clear', 'technical', 'editorial', 'minimal', 'terminal'])
 const MODULES = new Set(['profile', 'education', 'skills', 'projects', 'experience', 'awards', 'links', 'photo', 'summary', 'contact'])
+const BLOCK_TYPES = new Set(['profile', 'education', 'skills', 'projects', 'experience', 'awards', 'links', 'project-list', 'skill-tags', 'skill-groups', 'timeline', 'metric-row', 'portfolio-card', 'qr-code', 'photo', 'summary', 'contact', 'custom-section'])
 const HEX = /^#[0-9a-f]{6}$/i
-
-const FAMILY_PROFILES = Object.freeze({
-  'campus-clear': { name: '校招清晰', layout: 'single-column', density: 'standard', sidebarModules: [], typography: { fontFamily: 'system-sans', fontSize: 14, headingScale: 1.14, lineHeight: 1.55 }, spacing: { pageMargin: 48, sectionGap: 20, paragraphGap: 6 }, visual: { accentColor: '#2563eb', textColor: '#1f2937', mutedColor: '#6b7280', backgroundColor: '#ffffff', divider: 'solid', cornerRadius: 0, variant: 'standard' } },
-  'engineering-dense': { name: '工程密集', layout: 'single-column', density: 'compact', sidebarModules: [], typography: { fontFamily: 'modern-sans', fontSize: 13, headingScale: 1.1, lineHeight: 1.4 }, spacing: { pageMargin: 38, sectionGap: 14, paragraphGap: 3 }, visual: { accentColor: '#1e3a5f', textColor: '#172033', mutedColor: '#64748b', backgroundColor: '#ffffff', divider: 'solid', cornerRadius: 0, variant: 'technical' } },
-  'split-focus': { name: '双栏侧重', layout: 'two-column', density: 'standard', sidebarModules: ['skills', 'links', 'awards'], typography: { fontFamily: 'system-sans', fontSize: 14, headingScale: 1.12, lineHeight: 1.5 }, spacing: { pageMargin: 42, sectionGap: 17, paragraphGap: 5 }, visual: { accentColor: '#0f766e', textColor: '#1f2937', mutedColor: '#64748b', backgroundColor: '#ffffff', divider: 'solid', cornerRadius: 2, variant: 'standard' } },
-  'editorial-quiet': { name: '安静编辑', layout: 'single-column', density: 'airy', sidebarModules: [], typography: { fontFamily: 'serif', fontSize: 15, headingScale: 1.2, lineHeight: 1.7 }, spacing: { pageMargin: 58, sectionGap: 26, paragraphGap: 8 }, visual: { accentColor: '#0f766e', textColor: '#243238', mutedColor: '#718096', backgroundColor: '#fffdf8', divider: 'none', cornerRadius: 6, variant: 'editorial' } },
-  'portfolio-grid': { name: '项目作品集', layout: 'two-column', density: 'standard', sidebarModules: ['skills', 'links'], typography: { fontFamily: 'modern-sans', fontSize: 14, headingScale: 1.16, lineHeight: 1.55 }, spacing: { pageMargin: 44, sectionGap: 18, paragraphGap: 5 }, visual: { accentColor: '#7c3aed', textColor: '#2e243d', mutedColor: '#7c6f91', backgroundColor: '#fcfaff', divider: 'solid', cornerRadius: 8, variant: 'editorial' } },
-  'business-timeline': { name: '商务时间线', layout: 'single-column', density: 'standard', sidebarModules: [], typography: { fontFamily: 'modern-sans', fontSize: 13, headingScale: 1.12, lineHeight: 1.48 }, spacing: { pageMargin: 42, sectionGap: 18, paragraphGap: 5 }, visual: { accentColor: '#c8a45d', textColor: '#1f2937', mutedColor: '#64748b', backgroundColor: '#ffffff', divider: 'solid', cornerRadius: 0, variant: 'standard' } },
-  'magazine-editorial': { name: '杂志开篇', layout: 'single-column', density: 'airy', sidebarModules: [], typography: { fontFamily: 'serif', fontSize: 14, headingScale: 1.3, lineHeight: 1.62 }, spacing: { pageMargin: 48, sectionGap: 20, paragraphGap: 7 }, visual: { accentColor: '#be123c', textColor: '#292524', mutedColor: '#78716c', backgroundColor: '#fffdf7', divider: 'none', cornerRadius: 0, variant: 'editorial' } },
-  'geek-lab': { name: '极客实验室', layout: 'single-column', density: 'compact', sidebarModules: [], typography: { fontFamily: 'modern-sans', fontSize: 13, headingScale: 1.08, lineHeight: 1.4 }, spacing: { pageMargin: 40, sectionGap: 14, paragraphGap: 3 }, visual: { accentColor: '#a3e635', textColor: '#ecfccb', mutedColor: '#a7b89a', backgroundColor: '#101610', divider: 'solid', cornerRadius: 2, variant: 'terminal' } },
-})
 
 const CSS_QUALITY_HOOKS = Object.freeze([
   ['template scope', 'data-template-id'],
@@ -45,6 +36,7 @@ export const DESIGN_BRIEF_DEFAULTS = Object.freeze({
   templateCss: '',
   customCss: '',
   moduleOrder: [...TEMPLATE_DEFAULTS.layout.moduleOrder],
+  moduleTypes: {},
   sidebarModules: [],
   tags: [],
   bestFor: [],
@@ -54,7 +46,7 @@ export const DESIGN_BRIEF_DEFAULTS = Object.freeze({
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
 function slugify(value) { return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'ai-template' }
 function cleanList(value, limit = 7) { return Array.isArray(value) ? [...new Set(value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))].slice(0, limit) : [] }
-function familyFor(id) { return FAMILY_PROFILES[id] || FAMILY_PROFILES['campus-clear'] }
+function familyFor(id) { return resolveThemeFamily(id) }
 
 function normalizedComposition(value) {
   return Object.fromEntries(Object.entries(COMPOSITION_OPTIONS)
@@ -63,7 +55,7 @@ function normalizedComposition(value) {
 }
 
 export function listTemplateFamilies() {
-  return Object.entries(FAMILY_PROFILES).map(([id, profile]) => ({ id, ...clone(profile) }))
+  return listThemeFamilies()
 }
 
 export function auditTemplateCss(css, templateId = '') {
@@ -85,14 +77,16 @@ export function auditTemplateCss(css, templateId = '') {
 
 export function normalizeDesignBrief(input = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
-  const familyId = Object.hasOwn(raw, 'family') && FAMILY_PROFILES[raw.family]
+  const familyId = Object.hasOwn(raw, 'family') && THEME_FAMILY_IDS.includes(raw.family)
     ? raw.family
-    : (raw.audience === 'engineering' || raw.tone === 'technical' ? 'engineering-dense' : 'campus-clear')
+    : (!Object.hasOwn(raw, 'family') && (raw.audience === 'engineering' || raw.tone === 'technical')
+        ? 'engineering-dense'
+        : 'campus-clear')
   const profile = familyFor(familyId)
   const palette = raw.palette && typeof raw.palette === 'object' && !Array.isArray(raw.palette) ? raw.palette : {}
   const moduleOrder = cleanList(raw.moduleOrder).filter((module) => MODULES.has(module))
-  const layout = LAYOUTS.has(raw.layout) ? raw.layout : profile.layout
-  const density = DENSITIES.has(raw.density) ? raw.density : profile.density
+  const layout = LAYOUTS.has(raw.layout) ? raw.layout : profile.layout.mode
+  const density = DENSITIES.has(raw.density) ? raw.density : profile.layout.density
   const tone = TONES.has(raw.tone) ? raw.tone : (profile.visual.variant === 'technical' ? 'technical' : profile.visual.variant === 'editorial' ? 'editorial' : profile.visual.variant === 'terminal' ? 'terminal' : 'clear')
   const result = {
     ...clone(DESIGN_BRIEF_DEFAULTS),
@@ -110,12 +104,13 @@ export function normalizeDesignBrief(input = {}) {
     templateCss: typeof raw.templateCss === 'string' ? raw.templateCss : '',
     customCss: typeof raw.customCss === 'string' ? raw.customCss : '',
     moduleOrder: moduleOrder.length ? moduleOrder : [...TEMPLATE_DEFAULTS.layout.moduleOrder],
+    moduleTypes: Object.fromEntries(Object.entries(raw.moduleTypes && typeof raw.moduleTypes === 'object' && !Array.isArray(raw.moduleTypes) ? raw.moduleTypes : {}).filter(([module, type]) => MODULES.has(module) && BLOCK_TYPES.has(type))),
     sidebarModules: cleanList(raw.sidebarModules, 4).filter((module) => MODULES.has(module)),
     tags: cleanList(raw.tags, 6),
     bestFor: cleanList(raw.bestFor, 6),
     composition: normalizedComposition(raw.composition),
   }
-  if (!Object.hasOwn(raw, 'sidebarModules')) result.sidebarModules = profile.sidebarModules.filter((module) => result.moduleOrder.includes(module))
+  if (!Object.hasOwn(raw, 'sidebarModules')) result.sidebarModules = profile.layout.sidebarModules.filter((module) => result.moduleOrder.includes(module))
   else result.sidebarModules = result.sidebarModules.filter((module) => result.moduleOrder.includes(module))
   return result
 }
@@ -123,6 +118,9 @@ export function normalizeDesignBrief(input = {}) {
 export function validateDesignBrief(input) {
   const value = normalizeDesignBrief(input)
   const errors = []
+  if (input && typeof input === 'object' && !Array.isArray(input) && Object.hasOwn(input, 'family') && !THEME_FAMILY_IDS.includes(input.family)) {
+    errors.push(`family is unsupported: ${String(input.family)}`)
+  }
   if (!value.name || value.name.length > 40) errors.push('name is required and must be at most 40 characters')
   errors.push(...validateCssText(value.templateCss, { kind: 'templateCss' }).errors)
   errors.push(...validateCssText(value.customCss, { kind: 'customCss' }).errors)
@@ -131,15 +129,23 @@ export function validateDesignBrief(input) {
 
 function pageSpec(brief) {
   const editorial = brief.tone === 'editorial' || brief.family === 'magazine-editorial'
-  const terminal = brief.tone === 'terminal' || brief.family === 'geek-lab'
-  const technical = brief.tone === 'technical' || brief.audience === 'engineering' || brief.family === 'business-timeline'
+  const terminal = brief.tone === 'terminal' || brief.family === 'geek-lab' || brief.family === 'mono-terminal'
+  const technical = brief.tone === 'technical' || brief.audience === 'engineering' || brief.family === 'business-timeline' || brief.family === 'career-chronicle'
+  const avatar = brief.family === 'avatar-profile'
+  const editorialFamily = editorial || brief.family === 'heading-stack'
+  const projects = brief.family === 'case-study' || brief.family === 'impact-board' ? 'feature-first' : technical ? 'timeline' : editorialFamily ? 'cards' : 'standard'
+  const experience = technical ? 'timeline' : brief.family === 'case-study' ? 'role-stack' : editorialFamily ? 'feature-first' : 'standard'
+  const skills = brief.family === 'operation-block' || avatar ? 'grouped-chips' : brief.tone === 'minimal' ? 'inline' : brief.density === 'compact' ? 'rows' : 'list'
+  const section = terminal ? 'numbered-rail' : brief.family === 'operation-block' ? 'marker' : editorialFamily ? 'plain' : technical ? 'numbered-rail' : brief.tone === 'minimal' ? 'rule' : 'badge'
+  const header = terminal ? 'command' : avatar ? 'centered' : editorialFamily ? 'masthead' : 'masthead'
+  const typeScale = brief.density === 'compact' ? 'compact' : brief.density === 'airy' || editorialFamily ? 'display' : 'balanced'
   const margin = brief.density === 'compact' ? 34 : brief.density === 'airy' ? 52 : 42
   return normalizeCompositionPageSpec({
     page: { size: 'A4', column: 'single', density: brief.density, margin: { top: margin, right: margin, bottom: margin, left: margin } },
-    header: { variant: terminal ? 'command' : editorial ? 'masthead' : 'masthead', alignment: 'left', identity: 'stacked', contact: terminal ? 'stacked' : 'inline' },
+    header: { variant: header, alignment: avatar ? 'center' : 'left', identity: avatar ? 'split' : 'stacked', contact: terminal ? 'stacked' : 'inline' },
     flow: { layout: 'balanced-footer', order: brief.moduleOrder, keepEntryTogether: true, avoidSectionOrphans: true },
-    modules: { section: terminal || technical ? 'numbered-rail' : brief.tone === 'minimal' ? 'rule' : 'badge', experience: technical ? 'timeline' : 'standard', projects: editorial ? 'cards' : technical ? 'timeline' : 'standard', skills: brief.density === 'compact' ? 'rows' : brief.tone === 'minimal' ? 'inline' : 'grouped-chips', education: 'compact', awards: 'compact' },
-    visual: { family: brief.family, typeScale: brief.density === 'compact' ? 'compact' : editorial || brief.density === 'airy' ? 'display' : 'balanced', ruleStyle: brief.tone === 'minimal' ? 'none' : editorial ? 'solid' : 'hairline', accentMode: terminal ? 'text' : editorial ? 'surface' : 'marker' },
+    modules: { section, experience, projects, skills, education: 'compact', awards: 'compact' },
+    visual: { family: brief.family, typeScale, ruleStyle: brief.tone === 'minimal' ? 'none' : editorialFamily ? 'solid' : 'hairline', accentMode: terminal ? 'text' : editorialFamily ? 'surface' : 'marker' },
   })
 }
 
@@ -159,6 +165,29 @@ export function generateTemplateCandidate(input = {}) {
     ...brief.composition,
   }
   if (composition.page === 'stack') composition.pageSpec = pageSpec(brief)
+  const defaultModuleTypes = {
+    skills: brief.tone === 'minimal' ? 'skills' : 'skill-tags',
+    projects: brief.tone === 'editorial' ? 'portfolio-card' : 'project-list',
+    experience: brief.tone === 'technical' ? 'timeline' : 'experience',
+  }
+  const moduleTypes = { ...defaultModuleTypes, ...family.moduleTypes, ...brief.moduleTypes }
+  const mainModules = brief.moduleOrder.filter((module) => !brief.sidebarModules.includes(module))
+  const sidebarModules = brief.sidebarModules.length ? brief.sidebarModules : family.layout.sidebarModules
+  const sideModules = brief.layout === 'two-column' ? brief.moduleOrder.filter((module) => sidebarModules.includes(module)) : []
+  const layoutSpec = {
+    schemaVersion: 1,
+    mode: brief.layout,
+    regions: brief.layout === 'two-column' ? { main: mainModules, side: sideModules } : { main: mainModules },
+    ir: composition.page === 'grid'
+      ? { type: 'grid', columns: 2, gap: 20, items: brief.moduleOrder }
+      : brief.layout === 'two-column'
+        ? { type: 'split', gap: 22, columns: [{ id: 'main', width: '1fr', items: mainModules }, { id: 'side', width: '0.32fr', items: sideModules }] }
+        : { type: 'stack', items: brief.moduleOrder },
+    blocks: brief.moduleOrder.map((module) => {
+      const type = moduleTypes[module] || module
+      return { id: module, type, source: module, options: { preset: blockPreset(type).preset, family: brief.family } }
+    }),
+  }
   const id = brief.id || slugify(brief.name)
   const { templateCss: _templateCss, ...designBrief } = brief
   const template = normalizeTemplateSpec({
@@ -173,6 +202,10 @@ export function generateTemplateCandidate(input = {}) {
     spacing: { ...family.spacing, pageMargin: brief.density === 'compact' ? 38 : brief.density === 'airy' ? 58 : family.spacing.pageMargin, sectionGap: brief.density === 'compact' ? 14 : brief.density === 'airy' ? 26 : family.spacing.sectionGap, paragraphGap: brief.density === 'compact' ? 3 : brief.density === 'airy' ? 8 : family.spacing.paragraphGap },
     visual: { ...family.visual, ...brief.palette, variant: brief.tone === 'technical' ? 'technical' : brief.tone === 'editorial' ? 'editorial' : brief.tone === 'terminal' ? 'terminal' : 'standard' },
     composition,
+    // Keep the DSH-style layout IR with the template snapshot.  The candidate
+    // is still validated by the CVAgent template schema, but the renderer must
+    // receive the same structural contract that was shown to the user.
+    layoutSpec,
     templateCss: brief.templateCss,
     customCss: brief.customCss,
     metadata: { generatedBy: 'cvagent-template-design', familyName: family.name, audience: brief.audience, tone: brief.tone, bestFor: brief.bestFor, designBrief, immutable: false },
@@ -184,8 +217,9 @@ export function generateTemplateCandidate(input = {}) {
     errors: result.errors,
     brief,
     template: result.value,
+    layoutSpec,
     qualityAudit,
-    rationale: [`${brief.layout === 'two-column' ? '双栏' : '单栏'}结构，适合${brief.audience}场景`, `${brief.density}密度，优先保证 A4 信息层级`, `${family.name}主题家族由安全 token 和页面规格表达`, `质量闸门：${qualityAudit.status}，需要真实浏览器截图与 A4 指标确认`],
+    rationale: [`${brief.layout === 'two-column' ? '双栏' : '单栏'}结构，适合${brief.audience}场景`, `${brief.density}密度，优先保证 A4 信息层级`, `${family.name}主题家族与模块预设已映射到 layoutSpec`, `质量闸门：${qualityAudit.status}，需要真实浏览器截图与 A4 指标确认`],
     nextSteps: ['候选仍在内存中，不会写入工作区', '仅当用户明确创建、保存或应用时，调用模板保存流程', '保存后渲染饱满真实简历，并读取当前 renderId 的 A4 指标'],
   }
 }

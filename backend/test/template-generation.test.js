@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { auditTemplateCss, generateTemplateCandidate, listTemplateFamilies, validateDesignBrief } from '../src/migrated/resume-engine/template-generation.js'
+import { autoTunePresentation } from '../src/agent/presentation-autotune.js'
+import { TASK_STATES } from '../src/core/workflow.js'
 import { copyTemplate, listTemplateVersions, restoreTemplateVersion, saveTemplate } from '../src/migrated/resume-engine/template-presets.js'
 import { createServer } from '../src/server.js'
 
@@ -28,7 +30,44 @@ test('controlled template generation produces a renderable candidate without tou
   assert.equal(result.template.metadata.generatedBy, 'cvagent-template-design')
   assert.equal(result.template.composition.page, 'stack')
   assert.equal(result.template.composition.pageSpec.page.size, 'A4')
+  assert.equal(result.layoutSpec.ir.type, 'stack')
+  assert.equal(result.layoutSpec.blocks.find((block) => block.id === 'projects').options.preset, 'project-list')
   assert.equal(result.nextSteps[0], '候选仍在内存中，不会写入工作区')
+})
+
+test('canonical DSH theme system exposes all families and family-specific layout semantics', () => {
+  const families = listTemplateFamilies()
+  assert.equal(families.length, 17)
+  assert.ok(families.every((family) => family.supportedBlocks.length > 0))
+  const result = generateTemplateCandidate({ name: '肖像候选', family: 'avatar-profile', moduleOrder: ['profile', 'skills', 'experience'] })
+  assert.equal(result.valid, true)
+  assert.equal(result.template.composition.pageSpec.header.variant, 'centered')
+  assert.equal(result.layoutSpec.blocks.find((block) => block.id === 'skills').type, 'skill-tags')
+})
+
+test('template generation rejects unknown theme families instead of silently falling back', () => {
+  const result = generateTemplateCandidate({ name: 'Unknown family', family: 'not-a-real-family' })
+  assert.equal(result.valid, false)
+  assert.match(result.errors.join(' '), /family is unsupported/)
+})
+
+test('bounded template autotune applies DSH-compatible presentation steps only after current metrics', () => {
+  const task = {
+    state: TASK_STATES.MEASURED,
+    context: { renderId: 'render-current' },
+    measurements: { renderId: 'render-current', pageCount: 1, occupancy: [0.42], overflow: false },
+    acceptance: { minOccupancy: 0.9, maxSpread: 1 },
+  }
+  const result = autoTunePresentation({
+    task,
+    template: { id: 'campus-standard', typography: { fontSize: 14, lineHeight: 1.55 }, spacing: { sectionGap: 20, pageMargin: 48 } },
+    presentation: null,
+    resumePath: 'resume.md',
+    round: 3,
+  })
+  assert.equal(result.changed, true)
+  assert.deepEqual(result.patch.layout, { fontSize: 14.5, sectionGap: 22, pageMargin: 50 })
+  assert.equal(result.measurement.renderId, 'render-current')
 })
 
 test('Design Brief only accepts supported values and rejects unsafe CSS', () => {

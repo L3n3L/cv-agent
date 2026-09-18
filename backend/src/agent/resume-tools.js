@@ -1,7 +1,7 @@
 import { tool } from '@langchain/core/tools'
 import crypto from 'node:crypto'
 import { z } from 'zod'
-import { iconListSchema, inspectSchema, layoutValidateSchema, listSchema, measureSchema, presentationSchema, presentationSuggestSchema, qualitySchema, readMaterialSchema, templateCopySchema, templateGenerateSchema, templateRestoreSchema, templateSaveSchema, templateSelectSchema, templateVersionsSchema, versionSaveSchema, writeSchema } from './schemas.js'
+import { iconListSchema, inspectSchema, layoutValidateSchema, listSchema, measureSchema, presentationSchema, presentationSuggestSchema, qualitySchema, readMaterialSchema, templateAutotuneSchema, templateCopySchema, templateGenerateSchema, templateRestoreSchema, templateSaveSchema, templateSelectSchema, templateVersionsSchema, versionSaveSchema, writeSchema } from './schemas.js'
 import { contextFields } from '../core/context.js'
 import { contentHash } from '../core/content.js'
 import { WORKFLOW_EVENTS } from '../core/event-catalog.js'
@@ -13,10 +13,12 @@ import { copyWorkspaceTemplate, getWorkspaceTemplateSnapshotIdentity, listWorksp
 import { emptyPresentation, normalizePresentation, presentationWithOverride } from '../migrated/resume-engine/presentation.js'
 import { resumeQualityCheck } from '../migrated/resume-engine/quality.js'
 import { generateTemplateCandidate } from '../migrated/resume-engine/template-generation.js'
+import { listThemeFamilies } from '../migrated/resume-engine/theme-system.js'
 import { listIconTokens } from '../migrated/resume-engine/icons/registry.js'
 import { validateLayoutSpec } from '../migrated/resume-engine/layout-schema.js'
 import { CVAGENT_RESUME_PRODUCTION_CONTRACT } from './resume-production-contract.js'
 import { suggestPresentationAdjustment } from './presentation-suggestion.js'
+import { autoTunePresentation } from './presentation-autotune.js'
 
 export function createResumeToolHandlers(options = {}) {
   if (!options.workspaceRoot || !options.resumePath || !options.taskRef) throw new Error('workspaceRoot, resumePath and taskRef are required')
@@ -102,6 +104,9 @@ export function createResumeToolHandlers(options = {}) {
     async templateList() {
       return run('template_list', async () => ({ templates: await listWorkspaceTemplates(options.workspaceRoot), source: 'CVAgent built-in catalog + authorized workspace templates' }), { resultSummary: (result) => ({ templateCount: result.templates.length }) })
     },
+    async templateFamilyList() {
+      return run('template_family_list', async () => ({ families: listThemeFamilies(), source: 'CVAgent canonical theme system', nextAction: 'Choose a family before template_generate when the user asks for a new visual system.' }), { resultSummary: (result) => ({ familyCount: result.families.length }) })
+    },
     async templateSelect(input) {
       return run('template_select', async () => {
         const template = await loadWorkspaceTemplate(options.workspaceRoot, input.templateId)
@@ -159,6 +164,20 @@ export function createResumeToolHandlers(options = {}) {
         const suggestion = suggestPresentationAdjustment({ task: taskRef.current, template, presentation: normalizePresentation(taskRef.presentation || emptyPresentation()), resumePath: options.resumePath, round: input.round })
         return { templateId, ...suggestion, nextAction: suggestion.needsAdjustment ? 'Show this proposal to the user. Apply it only with a separate presentation_update after approval.' : 'No presentation change is needed; if the user confirms, save the accepted version.' }
       }, { resultSummary: (result) => ({ templateId: result.templateId, needsAdjustment: result.needsAdjustment, round: result.round }) })
+    },
+    async templateAutotune(input = {}) {
+      return run('template_autotune', async () => {
+        const templateId = taskRef.current.context.templateId || options.templateId || 'campus-standard'
+        const template = await loadWorkspaceTemplate(options.workspaceRoot, templateId)
+        const result = autoTunePresentation({ task: taskRef.current, template, presentation: normalizePresentation(taskRef.presentation || emptyPresentation()), resumePath: options.resumePath, round: input.round })
+        if (!result.changed) return { templateId, ...result, applied: false, state: taskRef.current.state, nextAction: 'Run resume_finalize if the current measurement is already acceptable.' }
+        const current = normalizePresentation(taskRef.presentation || emptyPresentation())
+        taskRef.presentation = presentationWithOverride(current, { templateId, resumePath: options.resumePath, ...result.patch })
+        taskRef.presentationRevision = Number(taskRef.presentationRevision || 1) + 1
+        const templateRevision = `${templateId}@${template.metadata?.revision || 1}-p${taskRef.presentationRevision}`
+        taskRef.current = recordTemplateChange(taskRef.current, { workspaceId: taskRef.current.context.workspaceId, resumeId: taskRef.current.context.resumeId, templateId, templateRevision })
+        return { templateId, templateRevision, presentation: taskRef.presentation, ...result, applied: true, state: taskRef.current.state, nextAction: 'The automatic tuning invalidated the old render. Run resume_check, resume_render, and obtain metrics for the new renderId.' }
+      }, { resultSummary: (result) => ({ templateId: result.templateId, applied: result.applied, changed: result.changed, round: result.round, state: result.state }) })
     },
     async resumeDraftWrite(input) {
       return run('resume_write', async () => {
@@ -278,7 +297,8 @@ export function createResumeTools(options = {}) {
     tool(async (input) => handlers.resumeQuality(input), { name: 'resume_check', description: 'Run the deterministic local content preflight. It checks structure, placeholders, bullet density and icon tokens; it does not prove factual truth or replace visual metrics.', schema: qualitySchema }),
     tool(async (input) => handlers.iconList(input), { name: 'icon_list', description: 'List known semantic and brand icon tokens. Use this before proposing [icon:slug]; never guess an icon token.', schema: iconListSchema }),
     tool(async (input) => handlers.layoutValidate(input), { name: 'layout_validate', description: 'Normalize and validate a structural template layout before it is proposed or saved. It does not write a template.', schema: layoutValidateSchema }),
-    tool(async () => handlers.templateList(), { name: 'template_list', description: 'List the migrated CVAgent templates. Use when the user asks what templates are available; do not silently replace a user-selected template.', schema: z.object({}) }),
+      tool(async () => handlers.templateList(), { name: 'template_list', description: 'List the migrated CVAgent templates. Use when the user asks what templates are available; do not silently replace a user-selected template.', schema: z.object({}) }),
+     tool(async () => handlers.templateFamilyList(), { name: 'template_family_list', description: 'List the canonical DSH-aligned theme families and supported semantic module presets. Read-only.', schema: z.object({}) }),
     tool(async (input) => handlers.templateSelect(input), { name: 'template_select', description: 'Select an explicit template for the current task. This invalidates the previous render and requires a new render and measurement.', schema: templateSelectSchema }),
     tool(async (input) => handlers.templateCopy(input), { name: 'template_copy', description: 'Copy a built-in or workspace template into a new independent workspace template. The source is not overwritten and the copy must be selected explicitly.', schema: templateCopySchema }),
     tool(async (input) => handlers.templateGenerate(input), { name: 'template_generate', description: 'Generate an in-memory, constrained template candidate from a Design Brief. It never writes a workspace file; inspect its validation and visual audit before proposing it to the user.', schema: templateGenerateSchema }),
@@ -286,7 +306,8 @@ export function createResumeTools(options = {}) {
     tool(async (input) => handlers.templateVersions(input), { name: 'template_versions', description: 'List immutable revisions for one workspace template. This is read-only.', schema: templateVersionsSchema }),
     tool(async (input) => handlers.templateRestore(input), { name: 'template_restore', description: 'Restore an explicitly requested template revision as a new immutable revision. It never overwrites revision history.', schema: templateRestoreSchema }),
     tool(async (input) => handlers.presentationUpdate(input), { name: 'presentation_update', description: 'Adjust the selected template presentation: typography, spacing, colors, divider, or icon tuning. This invalidates the previous render; use before compressing content when layout can solve the issue.', schema: presentationSchema }),
-    tool(async (input) => handlers.presentationSuggest(input), { name: 'presentation_suggest', description: 'Propose a bounded presentation adjustment from the exact current browser measurement. Read-only: it never changes the resume or template.', schema: presentationSuggestSchema }),
+      tool(async (input) => handlers.presentationSuggest(input), { name: 'presentation_suggest', description: 'Propose a bounded presentation adjustment from the exact current browser measurement. Read-only: it never changes the resume or template.', schema: presentationSuggestSchema }),
+     tool(async (input) => handlers.templateAutotune(input), { name: 'template_autotune', description: 'Apply one bounded DSH-aligned tuning round to the current resume presentation using only the exact current browser measurement. It never edits content or the reusable template, and always invalidates the current render.', schema: templateAutotuneSchema }),
     tool(async (input) => handlers.resumeDraftWrite(input), { name: 'resume_write', description: 'Write a new isolated draft under .cvagent/drafts. Never overwrite the source resume. Use for content iteration only; check, render, metrics, and finalize are still required.', schema: writeSchema }),
     tool(async () => handlers.resumeRender(), { name: 'resume_render', description: 'Render the current isolated draft into a new immutable preview artifact. Use after every draft or template change.', schema: z.object({}) }),
     tool(async () => handlers.resumeVerify(), { name: 'resume_finalize', description: 'Finalize the current resume candidate. Check page count, occupancy, spread, overflow, and version identity; completionAllowed is true only when the complete gate passes.', schema: z.object({}) }),

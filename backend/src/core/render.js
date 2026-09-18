@@ -63,7 +63,8 @@ export async function renderResumeDraft(options = {}) {
   const templateRevision = generatedId(options.templateRevision || `${resolvedTemplate.spec.id}@${resolvedTemplate.spec.metadata?.revision || 1}`, 'templateRevision')
   const content = String(options.content || '')
   const sourceHtml = markdownToHtml(content)
-  const bodyHtml = assembleResumeSections(sourceHtml, null, resolvedTemplate.spec.layout, resolvedTemplate.spec, { iconState: { next: 0 } })
+  const layoutSpec = resolvedTemplate.spec.layoutSpec || null
+  const bodyHtml = assembleResumeSections(sourceHtml, layoutSpec, resolvedTemplate.spec.layout, resolvedTemplate.spec, { iconState: { next: 0 } })
   const baseCss = await fs.readFile(DEFAULT_CSS_PATH, 'utf8')
   const title = /^\s*#\s+(.+)$/m.exec(content)?.[1]?.trim() || 'CVAgent Resume'
   const relativePath = `.cvagent/renders/${taskId}/${renderId}/preview.html`
@@ -77,8 +78,9 @@ export async function renderResumeDraft(options = {}) {
     previewPath: relativePath,
     previewRoot: options.workspaceRoot,
     renderId,
-    contentHash: crypto.createHash('sha256').update(`${contentVersion}:${resolvedTemplate.spec.id}:${resolvedTemplate.css}`).digest('hex').slice(0, 16),
+    contentHash: crypto.createHash('sha256').update(`${contentVersion}:${templateRevision}:${resolvedTemplate.spec.id}:${resolvedTemplate.css}:${JSON.stringify(layoutSpec || {})}`).digest('hex').slice(0, 16),
     templateSpec: resolvedTemplate.spec,
+    layoutSpec,
     initialIconTuning: options.initialIconTuning || options.presentation?.iconTuning || {},
   })
   const html = renderedHtml.replace('<main class="resume-document', '<main data-product="CVAgent" class="resume-document')

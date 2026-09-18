@@ -2,6 +2,9 @@
 
 更新：2026-09-18。此文档是后续 Agent/开发者的接手入口；实现事实以代码和测试为准。
 
+模板渲染能力的专项审计、DSH 对照差距和后续验收矩阵见：
+[`rendering-capability-retrospective.md`](./rendering-capability-retrospective.md)。本文负责总工序对接；专项文档负责回答“渲染内核是否平替、模板生态还缺什么”。
+
 ## 已实现的决定
 
 CVAgent 对齐 DSH `dsh-resume` MCP 的**简历生产业务契约**，不复用 DSH 宿主运行时。不得 import DSH 的 `ctx.tools`、全局工作区、侧栏状态或 `companies/` 文件结构。

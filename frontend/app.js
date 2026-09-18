@@ -40,6 +40,7 @@ let measurementInFlightKey = ''
 let workflowEventSource = null
 let workflowEventSessionId = ''
 let previewResizeObserver = null
+let previewFitFrame = 0
 
 const A4_PREVIEW_SIZE = Object.freeze({ width: 794, height: 1123 })
 
@@ -143,9 +144,14 @@ function fitPreviewFrame(frame) {
   const horizontalPadding = Number.parseFloat(stageStyle.paddingLeft || '0') + Number.parseFloat(stageStyle.paddingRight || '0')
   const availableWidth = Math.max(1, stage.clientWidth - horizontalPadding)
   const scale = Math.min(1, availableWidth / A4_PREVIEW_SIZE.width)
-  frame.style.setProperty('--preview-scale', scale.toFixed(4))
-  frame.style.setProperty('--preview-width', `${Math.round(A4_PREVIEW_SIZE.width * scale)}px`)
-  frame.style.setProperty('--preview-height', `${Math.round(A4_PREVIEW_SIZE.height * scale)}px`)
+  const nextValues = {
+    '--preview-scale': scale.toFixed(4),
+    '--preview-width': `${Math.round(A4_PREVIEW_SIZE.width * scale)}px`,
+    '--preview-height': `${Math.round(A4_PREVIEW_SIZE.height * scale)}px`,
+  }
+  Object.entries(nextValues).forEach(([name, value]) => {
+    if (frame.style.getPropertyValue(name) !== value) frame.style.setProperty(name, value)
+  })
 }
 
 function fitPreviewFrames() {
@@ -155,15 +161,29 @@ function fitPreviewFrames() {
   })
 }
 
+function schedulePreviewFit() {
+  if (previewFitFrame) return
+  if (typeof window.requestAnimationFrame !== 'function') {
+    fitPreviewFrames()
+    return
+  }
+  previewFitFrame = window.requestAnimationFrame(() => {
+    previewFitFrame = 0
+    fitPreviewFrames()
+  })
+}
+
 function bindPreviewFit() {
   previewResizeObserver?.disconnect()
   previewResizeObserver = null
+  if (previewFitFrame && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(previewFitFrame)
+  previewFitFrame = 0
   const stages = $$('.direct-preview-stage, .full-preview-canvas')
   if (typeof ResizeObserver === 'function') {
-    previewResizeObserver = new ResizeObserver(() => fitPreviewFrames())
+    previewResizeObserver = new ResizeObserver(() => schedulePreviewFit())
     stages.forEach((stage) => previewResizeObserver.observe(stage))
   }
-  fitPreviewFrames()
+  schedulePreviewFit()
 }
 
 function syncTemplatePreviewFrames() {

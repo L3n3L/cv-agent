@@ -55,6 +55,10 @@ test('frontend keeps the measured A4 fit when Agent is open on desktop widths', 
   assert.match(app, /const WORKBENCH_SCROLLBAR_RESERVE = 10/)
   assert.match(app, /function normalizeDesktopLayoutPrefs\(\)/)
   assert.match(app, /normalizeDesktopLayoutPrefs\(\)[\s\S]*?applyLayoutPrefs\(\)/)
+  assert.match(app, /let previewFitFrame = 0/)
+  assert.match(app, /function schedulePreviewFit\(\) \{[\s\S]*?window\.requestAnimationFrame\([\s\S]*?fitPreviewFrames\(\)/)
+  assert.match(app, /new ResizeObserver\(\(\) => schedulePreviewFit\(\)\)/)
+  assert.match(app, /frame\.style\.getPropertyValue\(name\) !== value/)
 })
 
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {

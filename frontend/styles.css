@@ -422,3 +422,10 @@ body { letter-spacing:-.005em; }
   .app-shell:not(.assistant-open) .workbench-split { height:calc(100dvh - 85px); }
   .app-shell.assistant-open .workbench-split { height:calc(100dvh - 71px); }
 }
+
+/* Shared React pane header contract; legacy classes remain as compatibility hooks during migration. */
+.pane-header { min-width:0; }
+.pane-header-copy { min-width:0; }
+.pane-header-copy > b,.pane-header-copy > span { display:block; }
+.pane-header-status { margin-top:0 !important; white-space:nowrap; }
+.editor-pane > #editorPaneMount { min-width:0; min-height:0; height:100%; }

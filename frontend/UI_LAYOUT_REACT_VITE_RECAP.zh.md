@@ -219,6 +219,24 @@ AppShell
 
 当前仍未完成：
 
-- Markdown、A4、Agent 的业务 pane 尚未全部改写为 React 组件；
+- A4、Agent 的业务 pane 尚未改写为 React 组件；
 - 共享 `PaneHeader`、`PaneFooter` 还处于契约设计阶段，旧 selector 仍是行为基线；
 - `/react/` 目前是并行验收入口，根路径仍使用旧入口，待各 pane 逐个迁移并通过截图后再切换。
+
+## 12. 第二阶段执行记录：Markdown pane（2026-09-18）
+
+已完成：
+
+- 新增 React `PaneHeader` 和 `MarkdownPane` 组件；
+- 通过 `legacy-bridge` 将 React Markdown pane 挂载到现有工作台，不复制后端状态；
+- 保留现有 `#resumeEditor`、`#editorApply`、`.editor-layout` 等行为契约，保存与重新渲染仍由原有 Agent 工作流负责；
+- 路由切换时卸载旧 React root，避免重复挂载和事件累积；
+- 补充 React 挂载点的全高尺寸契约，避免嵌套挂载后编辑区被压缩。
+
+验收结果：
+
+- Markdown pane 实际挂载数量：1；
+- 路由切换后 Markdown pane 未重复挂载；
+- 1280×720、Agent 打开时 Markdown/A4/Agent 仍为同级，编辑区和 A4 均保持可用宽度；
+- 控制台 error/warning：0；
+- React 类型检查、生产构建和后端 35 项回归测试：通过。

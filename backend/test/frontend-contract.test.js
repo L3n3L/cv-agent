@@ -77,6 +77,7 @@ test('React/Vite shell preserves the legacy DOM contract while migration is stag
   assert.match(source, /id="appShell"/)
   assert.match(source, /id="routeContent"/)
   assert.match(source, /id="assistantDrawer"/)
+  assert.match(source, /mountMarkdownPane/)
   assert.match(source, /className="workbench|className="resize-handle resize-sidebar"/)
   assert.match(source, /const scripts = \['api-client\.js', 'client-events\.js', 'agent-chat\.js', 'app\.js'\]/)
   assert.match(viteConfig, /base: '\/react\/'/)

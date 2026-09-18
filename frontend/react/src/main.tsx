@@ -1,6 +1,17 @@
-import { StrictMode, useEffect } from 'react'
+import { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import '../../styles.css'
+import { mountMarkdownPane, unmountLegacyReactPanes } from './legacy-bridge'
+import type { MarkdownPaneOptions } from './features/markdown/MarkdownPane'
+
+declare global {
+  interface Window {
+    CVAgentReact?: {
+      mountMarkdownPane: (container: Element, options: MarkdownPaneOptions) => void
+      unmountLegacyReactPanes: () => void
+    }
+  }
+}
 
 type IconName = 'folder' | 'home' | 'preview' | 'templates' | 'checks' | 'versions'
 
@@ -85,6 +96,7 @@ function loadLegacyScripts() {
 
 function AppShell() {
   useEffect(() => {
+    window.CVAgentReact = { mountMarkdownPane, unmountLegacyReactPanes }
     void loadLegacyScripts().catch((error) => {
       const toast = document.getElementById('toast')
       if (toast) toast.textContent = error instanceof Error ? error.message : String(error)
@@ -106,4 +118,4 @@ function AppShell() {
   )
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><AppShell /></StrictMode>)
+createRoot(document.getElementById('root')!).render(<AppShell />)

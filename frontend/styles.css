@@ -418,7 +418,7 @@ body { letter-spacing:-.005em; }
 
 /* The desktop workbench owns the remaining route height; do not leave a footer-sized void below it. */
 @media (min-width:901px) {
-  .app-shell:not(.assistant-open) .workbench-view { padding-bottom:0; }
+  .app-shell:not(.assistant-open) .workbench-view { padding-right:0; padding-bottom:0; padding-left:0; }
   .app-shell:not(.assistant-open) .workbench-split { height:calc(100dvh - 85px); }
   .app-shell.assistant-open .workbench-split { height:calc(100dvh - 71px); }
 }

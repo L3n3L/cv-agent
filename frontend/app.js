@@ -101,6 +101,7 @@ function measurePreviewFrame(frame, identity = {}) {
   frame.dataset.measureKey = key
   frame.addEventListener('load', () => {
     if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
+    syncPreviewDocumentHeight(frame)
     if (liveState.measuredRenderKey === key || measurementInFlightKey === key) return
     const documentRoot = frame.contentDocument?.documentElement
     const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
@@ -146,6 +147,24 @@ function measurePreviewFrame(frame, identity = {}) {
   })
 }
 
+function syncPreviewDocumentHeight(frame) {
+  const documentRoot = frame.contentDocument?.documentElement
+  const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
+  if (!documentRoot || !pages.length) return
+  const documentHeight = Math.max(
+    A4_PREVIEW_SIZE.height,
+    documentRoot.scrollHeight,
+    frame.contentDocument?.body?.scrollHeight || 0,
+  )
+  const frameWrap = frame.closest('.direct-preview-frame-wrap, .full-real-frame-wrap')
+  if (!frameWrap) return
+  frame.dataset.documentHeight = String(documentHeight)
+  frame.style.height = `${documentHeight}px`
+  const scale = Number.parseFloat(getComputedStyle(frameWrap).getPropertyValue('--preview-scale')) || 1
+  frameWrap.style.height = `${Math.ceil(documentHeight * scale)}px`
+  frameWrap.dataset.pageCount = String(pages.length)
+}
+
 function syncPreviewFrames() {
   const src = previewUrl()
   $$('.direct-preview-stage iframe, .full-real-frame').forEach((frame) => {
@@ -155,6 +174,9 @@ function syncPreviewFrames() {
       const previewKey = `${identity.sessionId}:${identity.renderId}`
       if (frame.dataset.previewKey !== previewKey) {
         frame.dataset.previewKey = previewKey
+        delete frame.dataset.documentHeight
+        frame.style.height = `${A4_PREVIEW_SIZE.height}px`
+        frame.closest('.direct-preview-frame-wrap, .full-real-frame-wrap')?.style.removeProperty('height')
         frame.src = src
       }
       return
@@ -183,6 +205,9 @@ function fitPreviewFrame(frame) {
   Object.entries(nextValues).forEach(([name, value]) => {
     if (frame.style.getPropertyValue(name) !== value) frame.style.setProperty(name, value)
   })
+  const iframe = frame.querySelector('iframe')
+  const documentHeight = Number(iframe?.dataset.documentHeight || 0)
+  if (Number.isFinite(documentHeight) && documentHeight > 0) frame.style.height = `${Math.ceil(documentHeight * scale)}px`
 }
 
 function fitPreviewFrames() {

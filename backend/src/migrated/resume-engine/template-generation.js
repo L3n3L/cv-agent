@@ -128,24 +128,23 @@ export function validateDesignBrief(input) {
 }
 
 function pageSpec(brief) {
-  const editorial = brief.tone === 'editorial' || brief.family === 'magazine-editorial'
-  const terminal = brief.tone === 'terminal' || brief.family === 'geek-lab' || brief.family === 'mono-terminal'
-  const technical = brief.tone === 'technical' || brief.audience === 'engineering' || brief.family === 'business-timeline' || brief.family === 'career-chronicle'
-  const avatar = brief.family === 'avatar-profile'
-  const editorialFamily = editorial || brief.family === 'heading-stack'
-  const projects = brief.family === 'case-study' || brief.family === 'impact-board' ? 'feature-first' : technical ? 'timeline' : editorialFamily ? 'cards' : 'standard'
-  const experience = technical ? 'timeline' : brief.family === 'case-study' ? 'role-stack' : editorialFamily ? 'feature-first' : 'standard'
-  const skills = brief.family === 'operation-block' || avatar ? 'grouped-chips' : brief.tone === 'minimal' ? 'inline' : brief.density === 'compact' ? 'rows' : 'list'
-  const section = terminal ? 'numbered-rail' : brief.family === 'operation-block' ? 'marker' : editorialFamily ? 'plain' : technical ? 'numbered-rail' : brief.tone === 'minimal' ? 'rule' : 'badge'
-  const header = terminal ? 'command' : avatar ? 'centered' : editorialFamily ? 'masthead' : 'masthead'
-  const typeScale = brief.density === 'compact' ? 'compact' : brief.density === 'airy' || editorialFamily ? 'display' : 'balanced'
+  const family = brief.family
+  const terminal = brief.tone === 'terminal' || family === 'geek-lab' || family === 'mono-terminal'
+  const editorial = brief.tone === 'editorial' || family === 'editorial-quiet' || family === 'magazine-editorial' || family === 'heading-stack'
+  const timeline = family === 'business-timeline' || family === 'career-chronicle' || brief.tone === 'technical' || brief.audience === 'engineering'
+  const projects = family === 'case-study' || family === 'impact-board' ? 'feature-first' : timeline ? 'timeline' : editorial ? 'cards' : 'standard'
+  const experience = timeline ? 'timeline' : family === 'case-study' ? 'role-stack' : editorial ? 'feature-first' : 'standard'
+  const skills = family === 'operation-block' || family === 'avatar-profile' ? 'grouped-chips' : brief.tone === 'minimal' ? 'inline' : brief.density === 'compact' ? 'rows' : 'list'
+  const section = terminal ? 'numbered-rail' : family === 'operation-block' ? 'marker' : editorial ? 'plain' : timeline ? 'numbered-rail' : brief.tone === 'minimal' ? 'rule' : 'badge'
+  const header = terminal ? 'command' : family === 'avatar-profile' ? 'centered' : editorial ? 'masthead' : 'masthead'
+  const typeScale = brief.density === 'compact' ? 'compact' : brief.density === 'airy' || editorial ? 'display' : 'balanced'
   const margin = brief.density === 'compact' ? 34 : brief.density === 'airy' ? 52 : 42
   return normalizeCompositionPageSpec({
     page: { size: 'A4', column: 'single', density: brief.density, margin: { top: margin, right: margin, bottom: margin, left: margin } },
-    header: { variant: header, alignment: avatar ? 'center' : 'left', identity: avatar ? 'split' : 'stacked', contact: terminal ? 'stacked' : 'inline' },
+    header: { variant: header, alignment: family === 'avatar-profile' ? 'center' : 'left', identity: family === 'avatar-profile' ? 'split' : 'stacked', contact: terminal ? 'stacked' : 'inline' },
     flow: { layout: 'balanced-footer', order: brief.moduleOrder, keepEntryTogether: true, avoidSectionOrphans: true },
     modules: { section, experience, projects, skills, education: 'compact', awards: 'compact' },
-    visual: { family: brief.family, typeScale, ruleStyle: brief.tone === 'minimal' ? 'none' : editorialFamily ? 'solid' : 'hairline', accentMode: terminal ? 'text' : editorialFamily ? 'surface' : 'marker' },
+    visual: { family, typeScale, ruleStyle: brief.tone === 'minimal' ? 'none' : editorial ? 'solid' : 'hairline', accentMode: terminal ? 'text' : editorial ? 'surface' : 'marker' },
   })
 }
 
@@ -155,13 +154,14 @@ export function generateTemplateCandidate(input = {}) {
   if (!validation.valid) return { valid: false, errors: validation.errors, brief }
   const family = familyFor(brief.family)
   const technical = brief.audience === 'engineering' || brief.tone === 'technical'
+  const timeline = brief.family === 'business-timeline' || brief.tone === 'technical' || brief.audience === 'engineering'
   const composition = {
-    page: brief.layout === 'two-column' ? 'split' : brief.family === 'portfolio-grid' ? 'grid' : 'stack',
-    header: brief.tone === 'editorial' || brief.family === 'business-timeline' ? 'hero' : 'standard',
+    page: brief.family === 'portfolio-grid' ? 'grid' : brief.layout === 'two-column' ? 'split' : 'stack',
+    header: brief.family === 'avatar-profile' || brief.family === 'business-timeline' || brief.audience === 'design' ? 'hero' : 'standard',
     section: brief.tone === 'minimal' ? 'line' : 'badge',
-    entry: technical ? 'timeline' : 'stack',
-    meta: brief.layout === 'two-column' || technical ? 'split' : 'inline',
-    skills: brief.tone === 'minimal' ? 'list' : 'chips',
+    entry: timeline ? 'timeline' : 'stack',
+    meta: timeline || brief.layout === 'two-column' ? 'split' : 'inline',
+    skills: brief.tone === 'minimal' || brief.family === 'business-timeline' ? 'list' : 'chips',
     ...brief.composition,
   }
   if (composition.page === 'stack') composition.pageSpec = pageSpec(brief)

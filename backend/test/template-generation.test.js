@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { auditTemplateCss, generateTemplateCandidate, listTemplateFamilies, validateDesignBrief } from '../src/migrated/resume-engine/template-generation.js'
+import { assembleResumeSections, markdownToHtml, rewriteImageSources } from '../src/migrated/resume-engine/renderer.js'
 import { autoTunePresentation } from '../src/agent/presentation-autotune.js'
 import { TASK_STATES } from '../src/core/workflow.js'
 import { copyTemplate, listTemplateVersions, restoreTemplateVersion, saveTemplate } from '../src/migrated/resume-engine/template-presets.js'
@@ -43,6 +44,40 @@ test('canonical DSH theme system exposes all families and family-specific layout
   assert.equal(result.valid, true)
   assert.equal(result.template.composition.pageSpec.header.variant, 'centered')
   assert.equal(result.layoutSpec.blocks.find((block) => block.id === 'skills').type, 'skill-tags')
+
+  const portfolio = generateTemplateCandidate({ name: '作品集候选', family: 'portfolio-grid', moduleOrder: ['education', 'experience', 'projects', 'skills', 'awards'] })
+  assert.deepEqual(
+    Object.fromEntries(['page', 'header', 'entry', 'meta', 'skills'].map((key) => [key, portfolio.template.composition[key]])),
+    { page: 'grid', header: 'standard', entry: 'stack', meta: 'split', skills: 'chips' },
+  )
+
+  const timeline = generateTemplateCandidate({ name: '商务候选', family: 'business-timeline', moduleOrder: ['education', 'experience', 'projects', 'skills', 'awards'] })
+  assert.deepEqual(
+    Object.fromEntries(['page', 'header', 'entry', 'meta', 'skills'].map((key) => [key, timeline.template.composition[key]])),
+    { page: 'stack', header: 'hero', entry: 'timeline', meta: 'split', skills: 'list' },
+  )
+})
+
+test('every canonical theme preserves the full Markdown section set in the renderer contract', () => {
+  const source = markdownToHtml(`# 候选人\n北京\n\n## 教育经历\n\n### 测试大学 · 计算机科学与技术\n\n## 实习经历\n\n### 测试公司 · 产品实习生\n\n- 负责需求分析与交付协作。\n\n## 项目经历\n\n### 测试项目\n\n- 完成项目方案与验证。\n\n## 技能\n\n- JavaScript\n\n## 获奖\n\n- 测试奖项`)
+  const expectedModules = ['education', 'experience', 'projects', 'skills', 'awards']
+  const results = listTemplateFamilies().map((family) => {
+    const candidate = generateTemplateCandidate({
+      id: `matrix-${family.id}`,
+      name: `矩阵 ${family.name}`,
+      family: family.id,
+      moduleOrder: ['education', 'experience', 'projects', 'skills', 'awards'],
+    })
+    assert.equal(candidate.valid, true, `${family.id} should generate a valid candidate`)
+    const html = assembleResumeSections(source, candidate.layoutSpec, candidate.template.layout, candidate.template, { iconState: { next: 0 } })
+    for (const module of expectedModules) assert.match(html, new RegExp(`data-module-id="${module}"`), `${family.id} lost ${module}`)
+    assert.match(html, /测试公司/, `${family.id} lost Markdown company content`)
+    assert.match(html, /产品实习生/, `${family.id} lost Markdown role content`)
+    assert.match(html, /完成项目方案与验证/, `${family.id} lost Markdown bullet content`)
+    return { family: family.id, modules: expectedModules.length, htmlBytes: Buffer.byteLength(html, 'utf8') }
+  })
+  assert.equal(results.length, 17)
+  assert.ok(results.every((result) => result.htmlBytes > 600))
 })
 
 test('template generation rejects unknown theme families instead of silently falling back', () => {
@@ -94,6 +129,13 @@ test('template CSS audit requires CVAgent renderer hooks before browser review',
   assert.equal(audit.status, 'ready-for-browser-review')
   assert.deepEqual(audit.missing, [])
   assert.ok(listTemplateFamilies().some((family) => family.id === 'split-focus'))
+})
+
+test('inline Markdown images use the CVAgent asset adapter while preserving the DSH rewrite contract', () => {
+  const html = rewriteImageSources(markdownToHtml('![头像](assets/avatar.png)'), { root: 'C:\\resume-workspace' })
+  assert.match(html, /src="\/api\/asset\?workspaceRoot=C%3A%5Cresume-workspace&amp;path=assets%2Favatar\.png"/)
+  const rejected = rewriteImageSources(markdownToHtml('![不安全](../secret.png)'), { root: 'C:\\resume-workspace' })
+  assert.match(rejected, /src=""/)
 })
 
 test('custom templates write immutable workspace revisions and restore as a new revision', async () => {

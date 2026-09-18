@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureWorkspace } from './workspace.js'
-import { assembleResumeSections, buildPreviewDocument, markdownToHtml } from '../migrated/resume-engine/renderer.js'
+import { assembleResumeSections, buildPreviewDocument, markdownToHtml, rewriteImageSources } from '../migrated/resume-engine/renderer.js'
 import { loadWorkspaceTemplate } from '../migrated/resume-engine/catalog.js'
 import { assertTemplateSpec } from '../migrated/resume-engine/template-schema.js'
 import { applyPresentationOverride } from '../migrated/resume-engine/presentation.js'
@@ -62,7 +62,7 @@ export async function renderResumeDraft(options = {}) {
   const resolvedTemplate = await resolveTemplate(options)
   const templateRevision = generatedId(options.templateRevision || `${resolvedTemplate.spec.id}@${resolvedTemplate.spec.metadata?.revision || 1}`, 'templateRevision')
   const content = String(options.content || '')
-  const sourceHtml = markdownToHtml(content)
+  const sourceHtml = rewriteImageSources(markdownToHtml(content), { root: options.workspaceRoot })
   const layoutSpec = resolvedTemplate.spec.layoutSpec || null
   const bodyHtml = assembleResumeSections(sourceHtml, layoutSpec, resolvedTemplate.spec.layout, resolvedTemplate.spec, { iconState: { next: 0 } })
   const baseCss = await fs.readFile(DEFAULT_CSS_PATH, 'utf8')

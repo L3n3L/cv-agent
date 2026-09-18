@@ -213,3 +213,117 @@ nextSteps
 当前准确表述应为：
 
 > CVAgent 已完成 DSH 简历渲染内核、A4 测量、手动 presentation 微调、主题生态、结构化模板生成和受限自动调参接入；最终视觉是否平替仍以真实浏览器验收矩阵为准。
+
+## 9. 2026-09-18：多页预览与 Markdown 渲染复盘
+
+### 真实浏览器发现
+
+当前 `magazine-feature` 在饱满简历下实际产生 3 个 `.cvagent-resume-page`，AX 树可以读到项目、实习、教育和荣誉正文。现有问题不是 Renderer 丢内容，而是工作台把 iframe 固定为单页高度并设置了 `scrolling="no"`；第 2、3 页因此被裁在视口外，用户会误以为模板没有渲染 Markdown。
+
+### 与 DSH 的行为结论
+
+- DSH 与 CVAgent 都按固定 794×1123 A4 页面分页，页面不足时继续创建后续页面；因此同一 Markdown、同一模板出现 2/3 页是允许的渲染结果。
+- DSH 的默认交付目标仍是一页 A4，多页会进入 `multi-page/overflow` 验收失败；“能渲染出多页”不等于“允许交付多页”。
+- CVAgent 的分页 DOM、页面高度、内容流和逐页 metrics 契约已保持 DSH 语义；CVAgent 仅使用独立命名空间和独立 HTTP 持久化，不应改变页面结果。
+
+### 已执行修正
+
+- 工作台预览 iframe 在 load 后读取实际 document/body 高度；外层 A4 画布同步扩展为全部页面的缩放高度，由外层滚动查看多页。
+- 每次新的 `renderId` 都清除旧的预览高度，避免上一份多页文档污染下一份一页文档。
+- 前端契约测试覆盖多页高度同步，17 个主题家族的结构扫描覆盖教育、实习、项目、技能、荣誉和正文条目。
+
+### 当前证据
+
+- 真实浏览器已检查现有 8 个工作区模板：全部存在正文文本和核心模块；不同模板出现 2/3 页，属于分页结果，不是正文丢失。
+- 17 个 canonical theme 的结构化渲染测试通过；时间线主题把公司和岗位拆成语义节点，这是预期的模块结构，不是文本缺失。
+- 17 个主题的最终视觉截图矩阵仍需继续逐个通过真实浏览器完成，不能用结构测试替代视觉验收。
+
+### 17 个主题的真实浏览器矩阵（2026-09-18）
+
+本轮使用同一份当前会话 Markdown、同一套 `assembleResumeSections → buildPreviewDocument` 渲染链路，在本地真实浏览器逐个打开 17 个 canonical theme 的预览页面。检查项包括：页面节点数量、`data-page-count`、`data-page-overflow`、核心模块文本和正文长度。
+
+| 主题家族 | 页面数 | 页内溢出 | 核心 Markdown 是否存在 | 结论 |
+| --- | ---: | --- | --- | --- |
+| campus-clear | 3 | 否 | 是 | 分页结果，内容存在 |
+| engineering-dense | 2 | 否 | 是 | 当前矩阵通过 |
+| split-focus | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| editorial-quiet | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| mono-terminal | 2 | 否 | 是 | 当前矩阵通过 |
+| portfolio-grid | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| business-timeline | 2 | 否 | 是 | 当前矩阵通过 |
+| avatar-profile | 3 | 否 | 是 | 分页结果，内容存在 |
+| magazine-editorial | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| impact-board | 2 | 否 | 是 | 当前矩阵通过 |
+| operation-block | 2 | 否 | 是 | 当前矩阵通过 |
+| career-chronicle | 2 | 否 | 是 | 当前矩阵通过 |
+| simple-typographic | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| geek-lab | 2 | 否 | 是 | 当前矩阵通过 |
+| heading-stack | 3 | 是 | 是 | 需要继续压缩/调分页 |
+| case-study | 2 | 否 | 是 | 当前矩阵通过 |
+| social-profile | 2 | 否 | 是 | 当前矩阵通过 |
+
+这里的“页内溢出”来自真实渲染文档根节点的 `data-page-overflow`，不是因为外层工作台把后续 A4 页面裁掉。页面数量为 2/3 也不代表 Markdown 没有渲染；它表示当前这份饱满内容在该主题的固定 A4 分页契约下占用了多页。
+
+### 同一模板 + 同一 Markdown 的一致性结论
+
+已用同一份 Markdown 做本地 DSH/CVAgent 代码级对照：
+
+- 两边 `markdownToHtml` 输出一致；
+- 两边 `assembleResumeSections` 输出在 `dsh-*` / `cvagent-*` 命名空间归一化后完全一致；
+- 17 个主题逐个对照后，`layoutSpec` 和 section HTML 均一致；本轮修正了 `portfolio-grid` 曾被错误生成成 `split/hero` 的契约漂移，并补上了 `business-timeline` 的 timeline/meta 规则回归断言；
+- 固定 A4 页面尺寸、页面创建、逐页 overflow 标记和 metrics 语义一致；
+- CVAgent 的差异只应存在于独立路径、持久化、HTTP 接口和前端预览高度同步，不应改变模板内容布局结果。
+
+因此后续如果出现“同模板同 Markdown 页面数不同”，排查顺序必须固定为：模板 revision/layoutSpec 是否相同 → presentation 是否相同 → Markdown/content hash 是否相同 → renderer 输出是否相同 → 浏览器字体/资源是否加载一致。不能直接通过主题名称判断两边是同一份模板。
+
+### 本轮发现的后续问题
+
+6 个主题的真实矩阵出现页内溢出，当前不能宣称 17 个主题全部达到 DSH 视觉平替。下一轮应针对这些主题逐个检查：
+
+1. 内容分栏或网格切页时是否把模块完整移动到下一页，而不是在固定页面容器内截断；
+2. 主题专属 CSS 是否改变了页面内容区的有效高度；
+3. 主题的默认字号、行高、模块间距和 page margin 是否超过该主题的真实容量；
+4. `pageOverflow=true` 时是否应进入受限 autotune，而不是仅依赖浏览器缩放；
+5. 截图应同时保留页面顶部、页面底部和 overflow 指标，避免只看首屏误判为“没有渲染”。
+
+本轮先修复了工作台的多页可见性问题并完成内容存在性验收；上述 6 个主题的页内版式修正属于下一阶段，不在本轮伪装成已通过。
+
+## 10. 2026-09-19：纠正“渲染行为完全一致”的判断
+
+### 用户反馈与根因
+
+之前把“CVAgent 的静态 Renderer 代码已经迁移”说成“DSH 和 CVAgent 的微调行为完全一致”，这个判断不准确。
+
+两边的固定 A4 分页核心确实是同一套算法：内容节点按页面内容区的实际 `scrollHeight` 分页，页面固定为 794×1123，第二页不是独立文档，也不是永远不能回流第一页。但 DSH 在编辑器调字号/行高/边距时，会带着新的 layout query 重新打开预览文档，让 CSS 在分页前生效；此前 CVAgent 的 React 调参只向已经完成分页的 iframe 发 CSS 变化消息，因此第二页一旦创建，后续缩小字号不会重新分配节点。
+
+这不是 DSH 的渲染规则不同，而是 CVAgent 迁移时多造了一条“只改 CSS 的实时预览路径”。这条路径已经删除其错误语义：当前 CVAgent 收到 layout draft 后会写入预览 URL 参数并刷新同一个渲染文档，刷新后的文档先应用 layout，再执行与 DSH 相同的分页算法。刷新不是正式保存，也不会修改正文、模板 revision 或正式 render；它只是把 DSH 的“新 preview URL”行为在独立 HTTP 宿主中复现出来。
+
+### 真实浏览器闭环证据
+
+使用当前真实工作台和同一套 iframe renderer 做闭环验证：
+
+1. 可控测试简历在字号 17.5px 时显示 2 页，第二页从“项目经历”开始；
+2. 将字号通过浏览器真实键盘操作降到 11px；
+3. iframe URL 同步为 `fontSize=11`，分页文档重新加载；
+4. AX 树中的“简历第 2 页”消失，项目内容回流到第 1 页；
+5. 恢复用户原始 Markdown 后，原始内容和 2 页结果均恢复，没有把测试内容或临时参数写入正式版本。
+
+用户当前这份较饱满的简历在 11px、行高 1.55、间距 6px、边距 56px 下仍然是 2 页，且 `pageOverflow=false`；这说明它在当前模板和参数下确实超过一页容量，不应把“仍是两页”直接当成分页回流失败。要声称与 DSH 一致，必须同时验证“能回流的内容会回流”和“真实超出容量的内容仍保持多页”这两个方向。
+
+### 迁移边界
+
+可以直接复用、必须保持行为一致的部分：
+
+- `markdownToHtml`；
+- `assembleResumeSections` 的语义结构、layoutSpec 消费和分页输入树；
+- `buildPreviewDocument` 的 A4 尺寸、页面创建、溢出判断和 metrics；
+- DSH 的 layout query → fresh preview document → paginate 顺序；
+- Markdown 图片的路径校验与资源重写。
+
+不能直接复制、但只能放在宿主适配层的部分：
+
+- DSH 的 `jobhunt` 路径和 `resolveUnderJobhunt`；
+- DSH 的 `/dsh-resume/api/asset`、metrics POST 和插件宿主事件；
+- CVAgent 的 `.cvagent` artifact、session/renderId、HTTP API 和 React iframe 生命周期。
+
+因此今后的原则不是“凭感觉重写一份相似代码”，而是：以 DSH `lib/renderer.js` 为 golden source；只在文件系统、资源路由、事件源和持久化边界做机械适配；每次 DSH renderer 变化都要做命名空间归一化 diff、后端回归、真实浏览器截图和分页回流测试。

@@ -37,17 +37,31 @@ function sectionHeading(part) {
 }
 
 function inferModuleFromHeading(heading) {
-  const value = String(heading || '').trim().toLowerCase()
+  const value = String(heading || '').trim()
+  const chinese = [
+    ['教育', 'education'],
+    ['技能', 'skills'],
+    ['项目', 'projects'],
+    ['实习', 'experience'],
+    ['经历', 'experience'],
+    ['获奖', 'awards'],
+    ['链接', 'links'],
+    ['简介', 'summary'],
+    ['头像', 'photo'],
+    ['联系', 'contact'],
+    ['自我评价', 'awards'],
+  ].find(([key]) => value.includes(key))?.[1]
+  if (chinese) return chinese
   return [
-    [/教育|education|academic|school|university/, 'education'],
-    [/技能|skill|technology|tech stack/, 'skills'],
-    [/项目|project|portfolio|case study/, 'projects'],
-    [/实习|工作|经历|experience|work|employment|intern/, 'experience'],
-    [/获奖|奖项|award|honor|certificate/, 'awards'],
-    [/链接|link|github|website|portfolio/, 'links'],
-    [/简介|summary|profile|about|objective/, 'summary'],
-    [/头像|photo|avatar/, 'photo'],
-    [/联系|contact/, 'contact'],
+    [/education|academic|school|university/i, 'education'],
+    [/skill|technology|tech stack/i, 'skills'],
+    [/project|portfolio|case study/i, 'projects'],
+    [/intern|experience|work|employment/i, 'experience'],
+    [/award|honor|certificate/i, 'awards'],
+    [/link|github|website/i, 'links'],
+    [/summary|profile|about|objective/i, 'summary'],
+    [/photo|avatar/i, 'photo'],
+    [/contact/i, 'contact'],
   ].find(([pattern]) => pattern.test(value))?.[1] || null
 }
 
@@ -70,6 +84,13 @@ function safeImageSource(source, context = {}) {
   return context.root
     ? `/api/asset?workspaceRoot=${encodeURIComponent(context.root)}&path=${encodeURIComponent(relative)}`
     : relative
+}
+
+// Keep the DSH renderer contract for inline Markdown images as well as the
+// dedicated photo module. The CVAgent host uses a different asset route, but
+// the source rewriting and traversal rejection are intentionally identical.
+export function rewriteImageSources(html, context = {}) {
+  return String(html || '').replace(/(<img\b[^>]*\bsrc=")([^"]+)(")/gi, (_match, prefix, source, suffix) => `${prefix}${escapeHtml(safeImageSource(source, context))}${suffix}`)
 }
 
 function photoShape(value) {
@@ -466,6 +487,26 @@ ${bodyHtml}
       const sectionGap = safeNumber(layout.sectionGap, 6, 30, template.spacing.sectionGap);
       const pageMargin = safeNumber(layout.pageMargin, 24, 72, template.spacing.pageMargin);
       const fontFamily = fontFamilies[layout.fontFamily] || templateFont;
+      const previewUrl = new URL(window.location.href);
+      const layoutQuery = {
+        fontFamily: layout.fontFamily || '',
+        fontSize: String(fontSize),
+        lineHeight: String(lineHeight),
+        sectionGap: String(sectionGap),
+        pageMargin: String(pageMargin),
+      };
+      const needsRepagination = Object.entries(layoutQuery).some(([key, value]) => previewUrl.searchParams.get(key) !== value);
+      if (needsRepagination) {
+        for (const [key, value] of Object.entries(layoutQuery)) {
+          if (value) previewUrl.searchParams.set(key, value);
+          else previewUrl.searchParams.delete(key);
+        }
+        // DSH's editor reopens a fresh preview for every layout draft. The
+        // fresh document is important: pagination must run after the new CSS
+        // values are applied, otherwise a second page created at the old font
+        // size can never be merged back into page one.
+        window.history.replaceState(null, '', previewUrl);
+      }
       rootStyle.setProperty('--resume-font-size', fontSize + 'px');
       rootStyle.setProperty('--resume-line-height', String(lineHeight));
       rootStyle.setProperty('--resume-section-gap', sectionGap + 'px');
@@ -478,6 +519,7 @@ ${bodyHtml}
         '.cvagent-resume-section{margin-bottom:' + sectionGap + 'px !important;}',
         'p,li{font-size:' + fontSize + 'px;margin-bottom:' + template.spacing.paragraphGap + 'px;}',
       ].join('');
+      if (needsRepagination) window.location.reload();
     };
     rootStyle.setProperty('--resume-font-size', template.typography.fontSize + 'px');
     rootStyle.setProperty('--resume-line-height', template.typography.lineHeight);

@@ -59,6 +59,9 @@ test('frontend keeps the measured A4 fit when Agent is open on desktop widths', 
   assert.match(app, /function schedulePreviewFit\(\) \{[\s\S]*?window\.requestAnimationFrame\([\s\S]*?fitPreviewFrames\(\)/)
   assert.match(app, /new ResizeObserver\(\(\) => schedulePreviewFit\(\)\)/)
   assert.match(app, /frame\.style\.getPropertyValue\(name\) !== value/)
+  assert.match(app, /function syncPreviewDocumentHeight\(frame\)/)
+  assert.match(app, /frame\.dataset\.documentHeight/)
+  assert.match(app, /frameWrap\.dataset\.pageCount/)
 })
 
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {
@@ -156,6 +159,9 @@ test('React A4 manual tuning follows the DSH boundary: live layout and real-icon
   assert.match(app, /请先将手动微调应用到当前草稿并完成真实 A4 测量/)
   assert.doesNotMatch(pane, /accentColor|backgroundColor|cornerRadius|divider/)
   assert.match(renderer, /const applyLayoutPreview = \(layout = \{\}\) =>/)
+  assert.match(renderer, /const layoutQuery = \{/)
+  assert.match(renderer, /window\.history\.replaceState\(null, '', previewUrl\)/)
+  assert.match(renderer, /if \(needsRepagination\) window\.location\.reload\(\)/)
   assert.match(renderer, /event\.data\?\.source === 'cvagent-resume-layout-preview'/)
   assert.match(renderer, /event\.data\?\.source === 'cvagent-resume-icon-tuning'/)
 })

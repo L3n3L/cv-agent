@@ -1,13 +1,15 @@
 import { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import '../../styles.css'
-import { mountMarkdownPane, unmountLegacyReactPanes } from './legacy-bridge'
+import { mountA4Pane, mountMarkdownPane, unmountLegacyReactPanes } from './legacy-bridge'
 import type { MarkdownPaneOptions } from './features/markdown/MarkdownPane'
+import type { A4PaneOptions } from './features/preview/A4Pane'
 
 declare global {
   interface Window {
     CVAgentReact?: {
       mountMarkdownPane: (container: Element, options: MarkdownPaneOptions) => void
+      mountA4Pane: (container: Element, options: A4PaneOptions) => void
       unmountLegacyReactPanes: () => void
     }
   }
@@ -96,7 +98,7 @@ function loadLegacyScripts() {
 
 function AppShell() {
   useEffect(() => {
-    window.CVAgentReact = { mountMarkdownPane, unmountLegacyReactPanes }
+    window.CVAgentReact = { mountMarkdownPane, mountA4Pane, unmountLegacyReactPanes }
     void loadLegacyScripts().catch((error) => {
       const toast = document.getElementById('toast')
       if (toast) toast.textContent = error instanceof Error ? error.message : String(error)

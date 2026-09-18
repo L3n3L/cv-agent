@@ -240,3 +240,33 @@ AppShell
 - 1280×720、Agent 打开时 Markdown/A4/Agent 仍为同级，编辑区和 A4 均保持可用宽度；
 - 控制台 error/warning：0；
 - React 类型检查、生产构建和后端 35 项回归测试：通过。
+
+## 13. 第三阶段执行记录：A4 pane（2026-09-18）
+
+本阶段把 A4 预览从 `renderWorkbench()` 内的静态模板字符串迁移到 React，同时继续复用旧的预览 API、iframe、真实测量和排版调节接口。
+
+已完成：
+
+- 新增 `A4Pane`，复用 `PaneHeader`，统一 A4 标题、模板名、预览状态和操作区的结构；
+- 通过 `legacy-bridge` 暴露 `mountA4Pane`，挂载点为 `#a4PaneMount`；
+- 保留 `.direct-preview-stage`、`.direct-preview-frame-wrap`、`data-preview-status`、`data-preview-foot-status` 等旧行为契约；
+- 手动微调输入改为 React 受控状态，成功应用后关闭面板，失败时保留面板；
+- A4 挂载点增加纵向 flex 高度契约，避免 iframe 舞台收缩或底部状态栏漂移；
+- React 挂载完成后重新执行预览同步、fit 绑定和状态头同步，避免状态文本早于 React commit 查询不到节点；
+- 删除 A4 旧的直接 DOM 监听器，避免 React 和旧事件处理重复执行。
+
+真实浏览器验收（`http://127.0.0.1:3191/react/`，1280×720）：
+
+- A4 React 根节点数量：1；A4 iframe 数量：1；
+- A4 预览 pane 高度与工作台高度一致，挂载点高度 635px，舞台正常占据剩余空间；
+- 手动微调面板可展开，4 个输入项存在，面板位于 A4 pane 内部，没有遮挡 Markdown 或 Agent；
+- Agent 打开后：Markdown 约 281px、A4 280px、Agent 约 372px；实测 A4 与 Agent 横向重叠为 0px；
+- 切换到已有验收通过会话并回到工作台后，真实 A4 iframe 可以加载简历成品；
+- 控制台 error/warning：0；
+- React 类型检查、生产构建和后端 36 项回归测试：通过。
+
+当前仍未完成：
+
+- Agent pane 仍由旧 DOM 渲染，下一阶段才迁移；
+- 默认根路径已切到 React 构建产物，`/react/` 继续保留作为显式验收入口；旧 JS/CSS 仍作为兼容资源由 React bridge 加载；
+- A4 页面状态文字、真实测量事件仍由旧 `app.js` 驱动，待 Agent pane 迁移后再统一收口到 React 状态边界。

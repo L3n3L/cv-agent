@@ -84,8 +84,9 @@ createServer(async (request, response) => {
     return
   }
   const reactRequest = url.pathname === '/react' || url.pathname.startsWith('/react/')
-  const publicRoot = reactRequest ? reactDist : root
-  const publicPath = reactRequest ? url.pathname.replace(/^\/react\/?/, '/') : url.pathname
+  const rootRequest = url.pathname === '/'
+  const publicRoot = reactRequest || rootRequest ? reactDist : root
+  const publicPath = reactRequest ? url.pathname.replace(/^\/react\/?/, '/') : rootRequest ? '/' : url.pathname
   const requested = publicPath === '/' ? '/index.html' : publicPath
   const file = normalize(join(publicRoot, requested))
   if (!file.startsWith(publicRoot)) { response.writeHead(403); response.end('Forbidden'); return }

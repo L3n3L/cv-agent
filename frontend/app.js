@@ -352,6 +352,9 @@ async function restoreSession(sessionId) {
     renderRoute(currentRoute)
     showToast(`已恢复「${liveState.templateName}」会话`)
     await loadSessionsForWorkspace()
+    syncPreviewFrames()
+    bindPreviewFit()
+    updateHeader()
   } catch (error) {
     showToast(`会话恢复失败：${errorText(error)}`)
   }
@@ -747,12 +750,12 @@ async function saveDraftAndRender(content) {
   }
 }
 
-async function applyPresentationTuning() {
+async function applyPresentationTuning(valuesOverride = null) {
   if (!liveState.sessionId) {
     showToast('请先选择工作区并加载简历')
     return
   }
-  const values = {
+  const values = valuesOverride || {
     fontSize: Number($('#tuningFontSize')?.value || 13),
     lineHeight: Number($('#tuningLineHeight')?.value || 1.5),
     sectionGap: Number($('#tuningSectionGap')?.value || 16),
@@ -783,7 +786,7 @@ async function applyPresentationTuning() {
 }
 
 function renderWorkbench() {
-  $('#routeContent').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div class="direct-preview-head"><div><div class="eyebrow">A4 预览</div><b data-template-name>${escapeHtml(liveState.templateName || liveState.templateId)}</b><span data-preview-status>等待渲染</span></div><div class="preview-actions"><span>适配宽度</span><button class="ghost-button" type="button" data-toggle-tuning>手动微调</button></div></div><div class="direct-preview-stage"><div class="direct-preview-frame-wrap"><iframe title="当前简历 A4 直接预览" src="about:blank" scrolling="no"></iframe></div></div><div class="direct-preview-foot"><span><i></i> <span data-preview-foot-status>等待渲染</span></span><button class="secondary-button" type="button" data-open-full-preview>打开完整预览</button></div><div class="presentation-panel" id="presentationPanel" hidden><div class="presentation-panel-head"><b>手动微调</b><button class="ghost-button" type="button" data-close-tuning>关闭</button></div><p>只修改当前会话的隔离版式，不覆盖源文件。</p><div class="tuning-grid"><label>字号<input id="tuningFontSize" type="number" min="11" max="18" step="0.5" value="13"></label><label>行高<input id="tuningLineHeight" type="number" min="1.2" max="2" step="0.05" value="1.5"></label><label>段落间距<input id="tuningSectionGap" type="number" min="6" max="30" step="1" value="16"></label><label>页边距<input id="tuningPageMargin" type="number" min="24" max="72" step="1" value="38"></label></div><button class="primary-small" id="applyTuning" type="button">应用并重新渲染</button></div></section></div></div>`
+  $('#routeContent').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div id="a4PaneMount" data-testid="a4-pane-root"></div></section></div></div>`
   const editorMount = $('#editorPaneMount')
   if (editorMount && window.CVAgentReact?.mountMarkdownPane) {
     window.CVAgentReact.mountMarkdownPane(editorMount, {
@@ -793,18 +796,22 @@ function renderWorkbench() {
       onApply: (content) => saveDraftAndRender(content),
     })
   }
-  syncPreviewFrames()
-  applyLayoutPrefs()
-  bindPreviewFit()
-  const tuningLayout = liveState.presentation?.layout || {}
-  for (const [id, key] of [['tuningFontSize', 'fontSize'], ['tuningLineHeight', 'lineHeight'], ['tuningSectionGap', 'sectionGap'], ['tuningPageMargin', 'pageMargin']]) {
-    if (tuningLayout[key] !== undefined && $(`#${id}`)) $(`#${id}`).value = tuningLayout[key]
+  const previewMount = $('#a4PaneMount')
+  if (previewMount && window.CVAgentReact?.mountA4Pane) {
+    window.CVAgentReact.mountA4Pane(previewMount, {
+      templateName: liveState.templateName || liveState.templateId,
+      layout: liveState.presentation?.layout || {},
+      onApplyTuning: (values) => applyPresentationTuning(values),
+      onOpenFullPreview: () => renderRoute('preview'),
+    })
   }
+  window.setTimeout(() => {
+    syncPreviewFrames()
+    bindPreviewFit()
+    updateHeader()
+  }, 0)
+  applyLayoutPrefs()
   renderAgentChat()
-  $('[data-open-full-preview]').addEventListener('click', () => renderRoute('preview'))
-  $('[data-toggle-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = !$('#presentationPanel').hidden })
-  $('[data-close-tuning]').addEventListener('click', () => { $('#presentationPanel').hidden = true })
-  $('#applyTuning').addEventListener('click', () => { void applyPresentationTuning() })
 }
 
 function renderPreview() {

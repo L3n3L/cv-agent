@@ -213,7 +213,27 @@ export async function saveResumeVersion(root, taskId, resumePath, metadata = {})
   const versionRelativePath = path.posix.join(MANIFEST_DIR, 'versions', versionId, path.posix.basename(draft.sourcePath))
   const versionPath = path.resolve(draft.root, ...versionRelativePath.split('/'))
   await writeAtomic(versionPath, draft.content)
-  const record = { schemaVersion: 1, id: versionId, name: String(metadata.name || '未命名版本').trim(), resumePath: versionRelativePath, contentVersion: String(metadata.contentVersion || ''), templateId: String(metadata.templateId || ''), templateRevision: String(metadata.templateRevision || ''), templateSnapshot: metadata.templateSnapshot && typeof metadata.templateSnapshot === 'object' ? metadata.templateSnapshot : null, presentation: metadata.presentation && typeof metadata.presentation === 'object' ? metadata.presentation : null, renderId: String(metadata.renderId || ''), savedAt: new Date().toISOString() }
+  const cleanLabel = (value, maxLength) => String(value || '').trim().slice(0, maxLength)
+  let jobDescriptionPath = null
+  if (metadata.jobDescriptionPath) {
+    try { jobDescriptionPath = assertRelativePath(metadata.jobDescriptionPath) } catch { jobDescriptionPath = null }
+  }
+  const record = {
+    schemaVersion: 2,
+    id: versionId,
+    name: cleanLabel(metadata.name || '未命名版本', 80),
+    resumePath: versionRelativePath,
+    contentVersion: String(metadata.contentVersion || ''),
+    templateId: String(metadata.templateId || ''),
+    templateRevision: String(metadata.templateRevision || ''),
+    templateSnapshot: metadata.templateSnapshot && typeof metadata.templateSnapshot === 'object' ? metadata.templateSnapshot : null,
+    presentation: metadata.presentation && typeof metadata.presentation === 'object' ? metadata.presentation : null,
+    renderId: String(metadata.renderId || ''),
+    targetRole: cleanLabel(metadata.targetRole, 120) || null,
+    company: cleanLabel(metadata.company, 120) || null,
+    jobDescriptionPath,
+    savedAt: new Date().toISOString(),
+  }
   const recordRelativePath = path.posix.join(MANIFEST_DIR, 'versions', versionId, 'version.json')
   await writeAtomic(path.resolve(draft.root, ...recordRelativePath.split('/')), `${JSON.stringify(record, null, 2)}\n`)
   return { ...record, absolutePath: versionPath }

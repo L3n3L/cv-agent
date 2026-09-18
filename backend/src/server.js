@@ -843,16 +843,28 @@ async function handleSave(request, response, options) {
       const task = session.taskRef.current
       if (task.state !== 'accepted') throw Object.assign(new Error('resume verification has not passed'), { code: 'SAVE_NOT_ALLOWED' })
       const runLogger = options.serverLogger.child(contextFields(task.context))
-      const templateRevision = Number(String(task.context.templateRevision || '').match(/@(\d+)/)?.[1] || 1)
-      const templateSnapshot = await getWorkspaceTemplateSnapshotIdentity(session.workspaceRoot, task.context.templateId, templateRevision)
-      const saved = await saveResumeVersion(session.workspaceRoot, task.context.taskId, session.resumePath, { ...contextFields(task.context), state: task.state, name: body.name, templateId: task.context.templateId, templateSnapshot, presentation: session.taskRef.presentation })
+        const templateId = task.context.templateId || session.templateId || 'campus-standard'
+        const templateRevision = Number(String(task.context.templateRevision || `${templateId}@1`).match(/@(\d+)/)?.[1] || 1)
+        const templateSnapshot = await getWorkspaceTemplateSnapshotIdentity(session.workspaceRoot, templateId, templateRevision)
+        const saved = await saveResumeVersion(session.workspaceRoot, task.context.taskId, session.resumePath, {
+          ...contextFields(task.context),
+          state: task.state,
+          name: body.name,
+          targetRole: body.targetRole,
+          company: body.company,
+          jobDescriptionPath: body.jobDescriptionPath,
+          templateId,
+          templateRevision: task.context.templateRevision || `${templateId}@${templateRevision}`,
+          templateSnapshot,
+          presentation: session.taskRef.presentation,
+        })
       session.taskRef.current = saveResumeTask(confirmResumeTask(task))
       session.status = session.taskRef.current.state
       session.runState = 'idle'
       session.lastError = null
       await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.SAVE_CONFIRMED, state: session.status, versionId: saved.id, ...contextFields(session.taskRef.current.context) })
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.SAVE_CONFIRMED, { ...session.taskRef.current, sessionId: session.sessionId }, { versionId: saved.id, versionName: saved.name })
-      sendJson(response, 200, { ok: true, sessionId, state: session.taskRef.current.state, version: { id: saved.id, name: saved.name, resumePath: saved.resumePath, contentVersion: saved.contentVersion, templateRevision: saved.templateRevision, templateSnapshot: saved.templateSnapshot } })
+        sendJson(response, 200, { ok: true, sessionId, state: session.taskRef.current.state, version: { id: saved.id, name: saved.name, resumePath: saved.resumePath, contentVersion: saved.contentVersion, templateRevision: saved.templateRevision, templateSnapshot: saved.templateSnapshot, targetRole: saved.targetRole, company: saved.company, jobDescriptionPath: saved.jobDescriptionPath } })
     })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'SAVE_FAILED'), errorMessage: String(error?.message || error) }

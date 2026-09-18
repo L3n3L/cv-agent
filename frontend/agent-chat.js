@@ -2,8 +2,11 @@
   const toolLabels = {
     workspace_info: '读取工作区',
     resume_prepare: '准备简历任务',
+    resume_production_guide: '读取简历生产契约',
     resume_read: '读取当前简历',
     resume_check: '检查简历内容',
+    icon_list: '查询可用图标',
+    layout_validate: '校验模板布局',
     template_list: '读取模板库',
     template_select: '切换简历模板',
     template_generate: '生成模板候选',
@@ -12,10 +15,12 @@
     template_restore: '恢复模板修订',
     workspace_materials_list: '读取工作区材料',
     presentation_update: '调整版式参数',
+    presentation_suggest: '生成版式调整建议',
     resume_write: '写入隔离草稿',
     resume_render: '重新渲染简历',
     resume_metrics: '接收 A4 测量',
     resume_finalize: '完成排版验收',
+    resume_save_version: '保存正式版本',
   }
 
   const eventLabels = {

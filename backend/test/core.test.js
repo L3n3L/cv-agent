@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { createLogger } from '../src/core/logger.js'
 import { createResumeTools } from '../src/agent/resume-tools.js'
+import { suggestPresentationAdjustment } from '../src/agent/presentation-suggestion.js'
 import { confirmResumeTask, createResumeTask, prepareResumeTask, recordDraftWrite, recordMeasurement, recordRender, recordTemplateChange, saveResumeTask, TASK_STATES, verifyResumeTask } from '../src/core/workflow.js'
 import { runResumeTool } from '../src/core/tool-runner.js'
 import { createServer } from '../src/server.js'
@@ -94,7 +95,7 @@ test('session store survives restart and marks interrupted runs for recovery', a
 test('agent exposes one canonical MCP-aligned resume workflow surface', () => {
   const tools = createResumeTools({ workspaceRoot: 'E:/resume-workspace', resumePath: 'resume.md', taskRef: { current: task() }, includeMeasurementTool: true })
   const names = tools.map((item) => item.name)
-  for (const name of ['resume_prepare', 'resume_read', 'resume_check', 'resume_write', 'resume_render', 'resume_metrics', 'resume_finalize']) assert.ok(names.includes(name), `${name} is missing`)
+  for (const name of ['resume_prepare', 'resume_production_guide', 'resume_read', 'resume_check', 'icon_list', 'layout_validate', 'resume_write', 'resume_render', 'resume_metrics', 'resume_finalize', 'presentation_suggest', 'resume_save_version']) assert.ok(names.includes(name), `${name} is missing`)
   for (const name of ['resume_inspect', 'resume_quality_check', 'resume_draft_write', 'resume_measure', 'resume_verify']) assert.ok(!names.includes(name), `${name} is a stale duplicate`)
   assert.equal(new Set(names).size, names.length)
 })
@@ -111,6 +112,19 @@ test('explicit template selection can replace the previous template identity', (
   assert.equal(next.context.templateId, 'business-ledger-plus')
   assert.equal(next.context.templateRevision, 'business-ledger-plus@1')
   assert.equal(next.context.renderId, null)
+})
+
+test('presentation suggestions require current metrics and never write by themselves', () => {
+  const template = { id: 'campus-standard', typography: { fontSize: 14, lineHeight: 1.55 }, spacing: { sectionGap: 20, pageMargin: 48 } }
+  assert.throws(() => suggestPresentationAdjustment({ task: task(), template, presentation: {}, resumePath: 'resume.md' }), { code: 'MEASUREMENT_REQUIRED' })
+  let current = recordDraftWrite(prepareResumeTask(task()), { contentVersion: 'content-1' })
+  current = recordRender(current, { contentVersion: 'content-1', templateRevision: 'campus-standard@1', renderId: 'render-1' })
+  current = recordMeasurement(current, { contentVersion: 'content-1', templateRevision: 'campus-standard@1', renderId: 'render-1', pageCount: 1, occupancy: [0.62], overflow: false })
+  const suggestion = suggestPresentationAdjustment({ task: current, template, presentation: {}, resumePath: 'resume.md' })
+  assert.equal(suggestion.needsAdjustment, true)
+  assert.equal(suggestion.requiresUserConfirmation, true)
+  assert.ok(suggestion.patch.layout.fontSize > 14)
+  assert.equal(current.measurements.occupancy[0], 0.62)
 })
 
 test('template selection returns a blocked draft to drafting so it can be rendered again', () => {
@@ -275,6 +289,12 @@ test('workspace drafts are isolated from the source resume and tools advance tas
     const prepared = await tools.find((tool) => tool.name === 'resume_prepare').invoke({})
     assert.equal(prepared.prepared, true)
     assert.equal(prepared.nextTool, 'resume_read')
+    const productionGuide = await tools.find((tool) => tool.name === 'resume_production_guide').invoke({})
+    assert.match(productionGuide.contract, /压缩 STAR/)
+    const icons = await tools.find((tool) => tool.name === 'icon_list').invoke({ query: 'github', limit: 3 })
+    assert.ok(icons.icons.some((icon) => icon.slug === 'github'))
+    const layout = await tools.find((tool) => tool.name === 'layout_validate').invoke({ layout: { mode: 'single-column', blocks: [{ id: 'education', type: 'education', source: 'education' }], regions: { main: ['education'] }, ir: { type: 'stack', items: ['education'] } } })
+    assert.equal(layout.valid, true)
     const inspected = await tools.find((tool) => tool.name === 'resume_read').invoke({ includeContent: true })
     assert.equal(inspected.content, source)
     const materials = await tools.find((tool) => tool.name === 'workspace_materials_list').invoke({ maxFiles: 100, maxDepth: 4 })
@@ -294,6 +314,13 @@ test('workspace drafts are isolated from the source resume and tools advance tas
     const verification = await tools.find((tool) => tool.name === 'resume_finalize').invoke({})
     assert.equal(verification.passed, true)
     assert.equal(verification.completionAllowed, true)
+    const suggestion = await tools.find((tool) => tool.name === 'presentation_suggest').invoke({ round: 1 })
+    assert.equal(suggestion.needsAdjustment, false)
+    const saved = await tools.find((tool) => tool.name === 'resume_save_version').invoke({ name: '产品实习投递版', targetRole: '产品实习生', company: '示例公司', jobDescriptionPath: 'materials/facts.md', confirmedByUser: true })
+    assert.equal(saved.state, TASK_STATES.SAVED)
+    assert.equal(saved.version.targetRole, '产品实习生')
+    assert.equal(saved.version.company, '示例公司')
+    assert.equal(saved.version.jobDescriptionPath, 'materials/facts.md')
     assert.equal(await fs.readFile(path.join(workspaceRoot, 'resume.md'), 'utf8'), source)
     assert.equal((await fs.readdir(path.join(workspaceRoot, '.cvagent', 'drafts', taskRef.current.context.taskId))).length, 1)
   } finally {

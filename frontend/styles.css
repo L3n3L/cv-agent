@@ -71,23 +71,23 @@ body { letter-spacing:-.005em; }
 .workbench-split { height:calc(100dvh - 246px); gap:0; margin-top:17px; }
 .editor-pane,.direct-preview-pane { border:0; border-radius:0; }
 .editor-pane { border-right:1px solid var(--workbench-seam); background:#fff; }
-.editor-pane .editor-layout { padding:0 28px 16px; }
-.editor-head { padding-top:16px; padding-bottom:12px; border-bottom-color:var(--workbench-seam); }
+.editor-pane .editor-layout { padding:0 0 10px; }
+.editor-head { padding:16px 16px 12px; border-bottom-color:var(--workbench-seam); }
 .editor-head b { font-size:13px; font-weight:600; }
 .editor-head > span { color:var(--muted); font:10px "IBM Plex Mono",monospace; }
-.editor-layout textarea { margin:0; padding:22px 0 18px; border:0; border-radius:0; color:#394657; background:#fff; line-height:1.85; }
+.editor-layout textarea { margin:0; padding:16px; border:0; border-radius:0; color:#394657; background:#fff; line-height:1.85; }
 .editor-layout textarea:focus { box-shadow:inset 0 0 0 1px #dce7fb; }
-.editor-foot { padding-top:12px; border-top:1px solid var(--workbench-weak); }
+.editor-foot { padding:8px 16px 0; border-top:1px solid var(--workbench-weak); }
 .editor-foot > span { color:var(--muted); }
 .primary-small { border-radius:4px; background:var(--blue); }
 .direct-preview-pane { background:#fbfcfd; }
 .direct-preview-head { padding:16px 22px 13px; border-bottom-color:var(--workbench-seam); }
 .direct-preview-head b { font-size:13px; font-weight:600; }
 .direct-preview-head .preview-actions { color:var(--muted); font-size:10px; }
-.direct-preview-stage { padding:22px 20px; background:var(--canvas); }
+.direct-preview-stage { padding:8px; background:var(--canvas); }
 .direct-preview-stage { overflow-x:hidden; overflow-y:auto; }
 .direct-preview-frame-wrap { box-shadow:0 8px 24px #263a590f; }
-.direct-preview-foot { padding:10px 22px; border-top-color:var(--workbench-weak); }
+.direct-preview-foot { padding:8px 16px; border-top-color:var(--workbench-weak); }
 .secondary-button { border-color:#dfe4e9; border-radius:4px; }
 .assistant-drawer { background:#fbfcfd; border-left-color:var(--line); }
 .assistant-context { margin-bottom:6px; padding:9px 0; border-width:0 0 1px; border-color:var(--line); border-radius:0; background:transparent; }

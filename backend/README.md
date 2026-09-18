@@ -67,5 +67,4 @@ Agent 核心工具按 MCP 简历工序对齐：`resume_prepare → resume_read �
 
 Deep Agents 负责规划、Skill、上下文和工具循环；简历领域核心负责唯一来源、版本失效、真实渲染指标和完成门。第一版不额外维护一套与 Deep Agents 平行的业务编排框架。
 
-产品复盘见：[docs/agent-product-retrospective.zh.md](docs/agent-product-retrospective.zh.md)，MCP 工序对接见：[docs/CVAGENT_MCP_ALIGNMENT.zh.md](docs/CVAGENT_MCP_ALIGNMENT.zh.md)，生产级日志升级见：[docs/LOGGING_UPGRADE_RETROSPECTIVE.zh.md](docs/LOGGING_UPGRADE_RETROSPECTIVE.zh.md)，运行日志规范见：[docs/PROJECT_LOG.md](docs/PROJECT_LOG.md) 和 [logs/README.md](logs/README.md)。
-工作区选择对接复盘见：[docs/WORKSPACE_SELECTION_RETROSPECTIVE.zh.md](docs/WORKSPACE_SELECTION_RETROSPECTIVE.zh.md)。
+当前工程文档从仓库根目录的 [docs/README.md](../docs/README.md) 进入。后端实现的默认依据是 [MCP 工序对接](docs/CVAGENT_MCP_ALIGNMENT.zh.md)、[日志升级复盘](docs/LOGGING_UPGRADE_RETROSPECTIVE.zh.md)、[运行项目日志](docs/PROJECT_LOG.md) 和 [工作区选择复盘](docs/WORKSPACE_SELECTION_RETROSPECTIVE.zh.md)；运行日志格式见 [logs/README.md](logs/README.md)。

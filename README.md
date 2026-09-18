@@ -41,4 +41,4 @@ node server.mjs
 - 不把 `.env`、`.cvagent`、`logs`、`node_modules` 提交到仓库；
 - 不在前端恢复插件运行时依赖。
 
-详细对接方案见 `backend/docs/DEMO_V2_FRONTEND_INTEGRATION_RETROSPECTIVE.zh.md`。
+当前工程与对接文档见 [docs/README.md](docs/README.md)。已完成阶段的规格与复盘保留在归档区，不作为后续实施入口。

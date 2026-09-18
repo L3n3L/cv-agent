@@ -71,7 +71,7 @@
 
 ## 2026-09-17 生产级日志升级与 MCP 工序审计对接
 
-- 新增 `docs/LOGGING_UPGRADE_RETROSPECTIVE.zh.md`、`specs/logging-upgrade/`，固化生产级日志需求、设计、验收标准和后续对接规则；单用户范围不降低工序一致性和恢复要求。
+- 新增 `docs/LOGGING_UPGRADE_RETROSPECTIVE.zh.md`、`specs/logging-upgrade/`，固化生产级日志需求、设计、验收标准和后续对接规则；单用户范围不降低工序一致性和恢复要求。（已完成的规格随后移入仓库根目录 `docs/archive/2026-09-completed-work/`。）
 - 新增 `src/core/event-catalog.js`，统一业务事件目录和关联字段校验；通用 `tool_call_*` 日志继续保留，但不再作为简历业务工序的唯一审计依据。
 - 工具层补齐 `artifact_written`、`render_started/succeeded/failed`、`measurement_received`、`verification_passed/blocked/failed`；渲染 ID 在开始前生成并贯穿当前内容版本和模板版本。
 - 服务层补齐 `agent_run_finished`、`session_restored`、`session_interrupted`、`source_changed`、`save_confirmed`、`save_rejected`；正式版本只有在用户确认且落盘成功后才记录 `save_confirmed`。

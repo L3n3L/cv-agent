@@ -148,7 +148,7 @@ status / lastError
 
 接手本项目时依次检查：
 
-1. 先读本文和 `docs/CODE_OPTIMIZATION.zh.md`；
+1. 先读本文、仓库根目录的 `docs/README.md` 与当前测试结果；历史代码优化记录在归档区，仅用于追溯；
 2. 查看 `git status`、最近提交和测试结果；
 3. 阅读 `src/core/workflow.js`，确认状态机没有被工具层复制；
 4. 阅读 `src/core/session.js` 和 SessionStore，确认持久化复用同一个锁；

@@ -32,6 +32,9 @@ const liveState = {
   agentEvents: [],
   agentRunActive: false,
   agentRunError: '',
+  streamingAssistantText: '',
+  streamingReasoning: '',
+  streamingMessageId: '',
   loading: false,
   templatePanel: null,
   templateCandidate: null,
@@ -41,6 +44,7 @@ const api = window.cvAgentApi
 let measurementInFlightKey = ''
 let workflowEventSource = null
 let workflowEventSessionId = ''
+let activeRunSyncPromise = null
 let previewResizeObserver = null
 let previewFitFrame = 0
 
@@ -84,13 +88,70 @@ function connectWorkflowEvents() {
     if (payload.event === 'agent_run_started') {
       liveState.agentRunActive = true
       liveState.agentRunError = ''
+      liveState.streamingAssistantText = ''
+      liveState.streamingReasoning = payload.reasoningSummary || '正在准备本轮任务。'
+      liveState.streamingMessageId = ''
     }
-    if (payload.event === 'agent_run_finished') liveState.agentRunActive = false
+    if (payload.event === 'assistant_delta') {
+      if (payload.messageId && liveState.streamingMessageId !== payload.messageId) {
+        liveState.streamingAssistantText = ''
+        liveState.streamingMessageId = payload.messageId
+      }
+      liveState.streamingAssistantText += String(payload.delta || '')
+      liveState.agentRunActive = true
+    }
+    if (payload.event === 'reasoning_summary') liveState.streamingReasoning = payload.reasoningSummary || liveState.streamingReasoning
+    if (payload.reasoningSummary && payload.event !== 'assistant_delta') liveState.streamingReasoning = payload.reasoningSummary
+    if (payload.event === 'agent_run_finished') {
+      liveState.agentRunActive = false
+      if (payload.outcome === 'failed') liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
+      void syncActiveSessionFromServer()
+    }
     if (payload.event === 'tool_call_succeeded' && ['template_copy', 'template_save', 'template_restore'].includes(payload.toolName)) {
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
     }
     renderAgentChat({ scrollToBottom: true })
   })
+}
+
+async function syncActiveSessionFromServer() {
+  if (!liveState.sessionId || activeRunSyncPromise) return activeRunSyncPromise
+  activeRunSyncPromise = (async () => {
+    try {
+      const { body } = await api.get(`/api/session?sessionId=${encodeURIComponent(liveState.sessionId)}`)
+      const session = body.session || {}
+      if (session.sessionId !== liveState.sessionId) return
+      liveState.workspace = body.workspace || liveState.workspace
+      liveState.workspaceId = liveState.workspace?.id || session.workspaceId || liveState.workspaceId
+      liveState.resumePath = body.source?.path || session.resumePath || liveState.resumePath
+      liveState.sourceContent = body.source?.content || liveState.sourceContent
+      liveState.draftContent = body.draft?.content || liveState.draftContent
+      liveState.messages = Array.isArray(session.messages) ? session.messages : liveState.messages
+      liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : liveState.agentEvents
+      liveState.presentation = body.presentation || liveState.presentation
+      liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
+      liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
+      liveState.renderId = body.context?.renderId || liveState.renderId
+      liveState.workflowState = body.state || session.status || liveState.workflowState
+      liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
+      liveState.measurement = session.taskRef?.current?.measurements || null
+      liveState.agentRunActive = false
+      liveState.streamingAssistantText = ''
+      liveState.streamingReasoning = ''
+      liveState.streamingMessageId = ''
+      renderAgentChat({ scrollToBottom: true })
+      syncPreviewFrames()
+      updateHeader()
+      void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
+      void loadSessionsForWorkspace()
+    } catch (error) {
+      liveState.agentRunError = errorText(error)
+      renderAgentChat({ scrollToBottom: true })
+    } finally {
+      activeRunSyncPromise = null
+    }
+  })()
+  return activeRunSyncPromise
 }
 
 function measurePreviewFrame(frame, identity = {}) {
@@ -391,6 +452,9 @@ async function restoreSession(sessionId) {
     liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
     liveState.agentRunActive = false
     liveState.agentRunError = ''
+    liveState.streamingAssistantText = ''
+    liveState.streamingReasoning = ''
+    liveState.streamingMessageId = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
     liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
@@ -427,6 +491,9 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.agentEvents = []
   liveState.agentRunActive = false
   liveState.agentRunError = ''
+  liveState.streamingAssistantText = ''
+  liveState.streamingReasoning = ''
+  liveState.streamingMessageId = ''
   activeSessionId = ''
   updateConnectionStatus()
   showToast('正在加载工作区…')
@@ -442,6 +509,9 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.agentEvents = Array.isArray(body.workflowEvents) ? body.workflowEvents : []
     liveState.agentRunActive = false
     liveState.agentRunError = ''
+    liveState.streamingAssistantText = ''
+    liveState.streamingReasoning = ''
+    liveState.streamingMessageId = ''
     liveState.presentation = body.presentation || null
     liveState.templateId = body.context?.templateId || liveState.templateId
     liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateName
@@ -463,6 +533,9 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.agentEvents = []
     liveState.agentRunActive = false
     liveState.agentRunError = ''
+    liveState.streamingAssistantText = ''
+    liveState.streamingReasoning = ''
+    liveState.streamingMessageId = ''
     activeSessionId = ''
     updateConnectionStatus()
     showToast(`工作区加载失败：${errorText(error)}`)
@@ -754,6 +827,8 @@ function renderChatRefined() {
     events: liveState.agentEvents,
     sessionReady: Boolean(liveState.sessionId),
     activeRun: liveState.agentRunActive,
+    streamingAssistantText: liveState.streamingAssistantText,
+    streamingReasoning: liveState.streamingReasoning,
     error: liveState.agentRunError,
   })
   return `<div class="chat-layout"><div class="chat-stream" data-testid="agent-timeline" role="log" aria-live="polite">${timeline}</div><form class="composer" id="composer" data-testid="agent-composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送</span><button type="submit">发送</button></div></form></div>`
@@ -1252,6 +1327,10 @@ function bindChat() {
     const input = $('#messageInput')
     const value = input.value.trim()
     if (!value) return
+    if (liveState.agentRunActive) {
+      showToast('当前 Agent 仍在执行，请等待本轮完成')
+      return
+    }
     if (!liveState.sessionId) {
       showToast('请先选择工作区并加载简历')
       return
@@ -1260,11 +1339,21 @@ function bindChat() {
     input.value = ''
     liveState.agentRunActive = true
     liveState.agentRunError = ''
+    liveState.streamingAssistantText = ''
+    liveState.streamingReasoning = '已发送，正在准备本轮任务。'
+    liveState.streamingMessageId = ''
     renderAgentChat({ scrollToBottom: true })
     updateSessionStatus('Agent 处理中')
     showToast('已发送，Agent 正在处理当前会话')
-    void api.post('/api/agent/run', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
+    void api.post('/api/agent/run?stream=1', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
       .then(({ body }) => {
+        if (body.accepted === true) {
+          // The response only acknowledges scheduling. All visible progress,
+          // including tools and answer deltas, arrives through the session SSE.
+          liveState.agentRunActive = true
+          renderAgentChat({ scrollToBottom: true })
+          return
+        }
         liveState.workflowState = body.state || liveState.workflowState
         applyTemplateContext(body.context)
         const previousRenderId = liveState.renderId
@@ -1278,6 +1367,9 @@ function bindChat() {
         liveState.messages.push({ role: 'assistant', content: assistantMessage })
         liveState.agentRunActive = false
         liveState.agentRunError = ''
+        liveState.streamingAssistantText = ''
+        liveState.streamingReasoning = ''
+        liveState.streamingMessageId = ''
         renderAgentChat({ scrollToBottom: true })
         syncPreviewFrames()
         updateHeader()
@@ -1287,6 +1379,7 @@ function bindChat() {
       .catch((error) => {
         liveState.agentRunActive = false
         liveState.agentRunError = errorText(error)
+        liveState.streamingReasoning = ''
         renderAgentChat({ scrollToBottom: true })
         updateSessionStatus('Agent 执行失败')
         showToast(`Agent 执行失败：${errorText(error)}`)

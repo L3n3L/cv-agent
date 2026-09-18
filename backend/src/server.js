@@ -21,6 +21,7 @@ import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/work
 import { copyWorkspaceTemplate, getWorkspaceTemplateSnapshotIdentity, listWorkspaceTemplateVersions, listWorkspaceTemplates, loadWorkspaceTemplate, restoreWorkspaceTemplateVersion, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
 import { renderResumeDraft } from './core/render.js'
 import { generateTemplateCandidate } from './migrated/resume-engine/template-generation.js'
+import { runAgentWithStreaming } from './agent/streaming.js'
 
 const port = Number(process.env.CVAGENT_PORT || 3180)
 const logger = createLogger({ component: 'cvagent-server' })
@@ -48,6 +49,48 @@ function assistantText(result) {
   if (typeof last?.content === 'string') return last.content
   if (Array.isArray(last?.content)) return last.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
   return ''
+}
+
+const TOOL_PHASES = Object.freeze({
+  workspace_info: ['读取', '正在读取工作区信息。'],
+  workspace_materials_list: ['读取材料', '正在读取可用材料，建立证据范围。'],
+  workspace_material_read: ['读取材料', '正在读取与目标岗位相关的材料。'],
+  resume_production_guide: ['准备', '正在读取简历生产契约。'],
+  resume_prepare: ['准备', '正在准备本轮简历任务。'],
+  resume_read: ['读取', '正在读取当前简历和已有内容。'],
+  resume_check: ['检查', '正在检查结构、占位符和内容完整性。'],
+  icon_list: ['检查', '正在确认可用图标，避免使用未注册 token。'],
+  layout_validate: ['检查', '正在校验模板布局结构。'],
+  template_list: ['模板', '正在读取当前工作区模板库。'],
+  template_family_list: ['模板', '正在读取可用模板主题。'],
+  template_select: ['模板', '正在应用明确选择的简历模板。'],
+  template_copy: ['模板', '正在复制模板结构，保留原模板版本。'],
+  template_generate: ['模板', '正在生成受约束的模板候选。'],
+  template_save: ['模板', '正在保存已确认的工作区模板版本。'],
+  template_versions: ['模板', '正在读取模板修订历史。'],
+  template_restore: ['模板', '正在恢复指定模板修订。'],
+  presentation_update: ['版式', '正在调整当前模板的版式参数。'],
+  presentation_suggest: ['版式', '正在根据真实测量生成版式建议。'],
+  template_autotune: ['版式', '正在执行一轮受约束的版式微调。'],
+  resume_write: ['写入', '正在写入隔离草稿，源文件保持不变。'],
+  resume_render: ['渲染', '正在用当前草稿和模板生成新的预览。'],
+  resume_metrics: ['测量', '正在等待当前 render 的真实浏览器测量。'],
+  resume_finalize: ['验收', '正在核对页数、占用率、溢出和版本身份。'],
+  resume_save_version: ['保存', '正在保存用户确认的正式版本。'],
+})
+
+function safeProgressText(value, maxLength = 240) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, maxLength)
+}
+
+function workflowProgress(event = {}) {
+  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_STARTED) return { phase: '准备', reasoningSummary: '正在准备本轮任务。' }
+  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_FINISHED) return { phase: '完成', reasoningSummary: '本轮处理已完成，正在同步结果。' }
+  const phase = TOOL_PHASES[String(event.toolName || '')]
+  if (!phase) return {}
+  if (event.event === WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED) return { phase: phase[0], reasoningSummary: `已完成${phase[0]}，正在整理下一步。` }
+  if (event.event === WORKFLOW_EVENTS.TOOL_CALL_FAILED) return { phase: phase[0], reasoningSummary: `${phase[0]}步骤遇到阻断，需要检查失败原因。` }
+  return { phase: phase[0], reasoningSummary: phase[1] }
 }
 
 function createWorkflowEventBroker() {
@@ -90,20 +133,32 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
   if (!broker || !session?.sessionId || !event?.event) return
   const task = event.task || session.taskRef?.current || {}
   const resultSummary = safeWorkflowSummary(event.resultSummary)
+  const progress = workflowProgress(event)
   const payload = {
     timestamp: new Date().toISOString(),
     event: event.event,
     sessionId: session.sessionId,
     ...contextFields(task.context),
     ...(event.toolName ? { toolName: event.toolName } : {}),
+    ...(event.toolCallId ? { toolCallId: String(event.toolCallId) } : {}),
+    ...(event.messageId ? { messageId: String(event.messageId) } : {}),
     ...(event.mode ? { mode: event.mode } : {}),
     ...(event.outcome ? { outcome: event.outcome } : {}),
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+    ...(event.delta ? { delta: safeProgressText(event.delta, 2000) } : {}),
+    ...(event.phase || progress.phase ? { phase: safeProgressText(event.phase || progress.phase, 48) } : {}),
+    ...(event.reasoningSummary || progress.reasoningSummary ? { reasoningSummary: safeProgressText(event.reasoningSummary || progress.reasoningSummary) } : {}),
     ...(resultSummary ? { resultSummary } : {}),
   }
-  session.workflowEvents = [...(Array.isArray(session.workflowEvents) ? session.workflowEvents : []), payload].slice(-240)
-  await persistSession(sessionStore, session).catch(() => {})
+  // Text deltas are live transport data, not audit history. Persisting every
+  // token would turn a long answer into hundreds of filesystem writes and
+  // evict the tool/verification timeline that must remain after the session
+  // ends. The final assistant message is persisted with the session snapshot.
+  if (event.event !== WORKFLOW_EVENTS.ASSISTANT_DELTA) {
+    session.workflowEvents = [...(Array.isArray(session.workflowEvents) ? session.workflowEvents : []), payload].slice(-240)
+    await persistSession(sessionStore, session).catch(() => {})
+  }
   broker.publish(session.sessionId, payload)
 }
 
@@ -120,8 +175,14 @@ async function runAgentTurn(session, message, options = {}) {
   await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode })
   const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: options.onWorkflowEvent })
   const agent = await options.agentFactory({ tools, task, taskRef })
-  if (!agent || typeof agent.invoke !== 'function') throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
-  const result = await agent.invoke({ messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] })
+  if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
+  const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
+  const streamed = await runAgentWithStreaming(agent, input, {
+    onAssistantStart: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode }),
+    onAssistantDelta: ({ messageId, delta }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode }),
+    onAssistantFinish: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, task: { ...task, sessionId: session.sessionId }, mode }),
+  })
+  const result = streamed.result
   if (Array.isArray(result?.messages)) session.messages = result.messages
   const nextTask = taskRef.current
   session.runState = 'idle'
@@ -161,6 +222,28 @@ function sessionToolPersistence(sessionStore, session) {
     session.status = session.taskRef.current?.state || session.status || 'idle'
     await persistSession(sessionStore, session, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, toolName, state: session.status, ...contextFields(session.taskRef.current?.context) })
   }
+}
+
+async function recordAgentRunFailure(session, error, options, mode = 'user_message') {
+  if (!session) return
+  const errorCode = String(error?.code || 'AGENT_RUN_FAILED')
+  const errorMessage = String(error?.message || error)
+  session.runState = 'failed'
+  session.status = session.taskRef.current?.state || 'failed'
+  session.lastError = { code: errorCode, message: errorMessage }
+  if (errorCode === 'SOURCE_CHANGED') {
+    await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...session.taskRef.current, sessionId: session.sessionId }, { errorCode, resumePath: session.resumePath }).catch(() => {})
+  }
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode, errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
+  await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode, errorCode }).catch(() => {})
+  await publishWorkflowEvent(options.workflowEvents, session, {
+    event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED,
+    task: { ...session.taskRef.current, sessionId: session.sessionId },
+    outcome: 'failed',
+    errorCode,
+    mode,
+  }, options.sessionStore).catch(() => {})
+  await options.serverLogger.error('agent_run_failed', { ...contextFields(session.taskRef.current?.context), errorCode, errorMessage, mode }).catch(() => {})
 }
 
 function publicSessionSummary(sessionStore, session, includeMessages = false) {
@@ -281,7 +364,7 @@ export function createServer(options = {}) {
       void handleVersionMutation(request, response, { action: request.url.split('/').at(-1), workspaceRegistry })
       return
     }
-    if (request.method === 'POST' && request.url === '/api/agent/run') {
+    if (request.method === 'POST' && new URL(request.url, 'http://127.0.0.1').pathname === '/api/agent/run') {
       void handleAgentRun(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workspaceRegistry, workflowEvents })
       return
     }
@@ -794,24 +877,26 @@ async function handleAgentRun(request, response, options) {
       session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, sessionId, sourceHash })
       options.sessions.set(sessionId, session)
     }
-    return await withSessionLock(session, async () => {
+    const execute = () => withSessionLock(session, async () => {
       const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
-      sendJson(response, 200, { ok: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
+      return { sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
     })
+    const streamRequested = new URL(request.url, 'http://127.0.0.1').searchParams.get('stream') === '1'
+    if (streamRequested) {
+      sendJson(response, 202, { ok: true, accepted: true, sessionId, state: session.taskRef.current?.state || session.status, runState: 'running' })
+      void execute().catch((error) => recordAgentRunFailure(session, error, options).catch(() => {}))
+      return
+    }
+    const result = await execute()
+    sendJson(response, 200, { ok: true, ...result })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_RUN_FAILED'), errorMessage: String(error?.message || error) }
     if (session) {
-      session.runState = 'failed'
-      session.status = session.taskRef.current?.state || 'failed'
-      session.lastError = { code: details.errorCode, message: details.errorMessage }
-      if (error?.code === 'SOURCE_CHANGED') {
-        await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...session.taskRef.current, sessionId: session.sessionId }, { errorCode: details.errorCode, resumePath: session.resumePath }).catch(() => {})
-      }
-      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, errorCode: details.errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
-      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, errorCode: details.errorCode }).catch(() => {})
+      await recordAgentRunFailure(session, error, options)
+    } else {
+      await options.serverLogger.error('agent_run_failed', { ...(task ? contextFields(task.context) : {}), ...details })
     }
-    await options.serverLogger.error('agent_run_failed', { ...(task ? contextFields(task.context) : {}), ...details })
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MESSAGE_REQUIRED', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'SESSION_INVALID', 'SESSION_SCOPE_MISMATCH', 'SOURCE_CHANGED'])
     sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
   }

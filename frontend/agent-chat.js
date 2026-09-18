@@ -291,12 +291,23 @@
   function processRows(events) {
     const rows = []
     const rowByKey = new Map()
+    const activeToolRows = new Map()
     for (const event of events) {
       const isTool = event.event === 'tool_call_started' || event.event === 'tool_call_succeeded' || event.event === 'tool_call_failed'
+      if (event.event === 'assistant_message_started' || event.event === 'assistant_delta' || event.event === 'assistant_message_finished' || event.event === 'reasoning_summary') continue
       if (event.event === 'agent_run_started' || event.event === 'agent_run_finished') continue
-      const key = isTool ? `tool:${event.toolName || 'agent'}` : `event:${event.event}`
+      let key = `event:${event.event}`
+      if (isTool) {
+        const toolName = String(event.toolName || 'agent')
+        if (event.event === 'tool_call_started') {
+          key = `tool:${event.toolCallId || `${toolName}:${rows.length}`}`
+          activeToolRows.set(toolName, key)
+        } else {
+          key = event.toolCallId ? `tool:${event.toolCallId}` : activeToolRows.get(toolName) || `tool:${toolName}:${rows.length}`
+        }
+      }
       if (!rowByKey.has(key)) {
-        const row = { key, label: isTool ? (toolLabels[event.toolName] || event.toolName || 'Agent 工具') : (eventLabels[event.event] || 'Agent 处理'), state: 'running', detail: '', summary: null, timestamp: event.timestamp, durationMs: null }
+        const row = { key, label: isTool ? (toolLabels[event.toolName] || event.toolName || 'Agent 工具') : (eventLabels[event.event] || 'Agent 处理'), state: 'running', detail: '', summary: null, timestamp: event.timestamp, durationMs: null, phase: event.phase || '' }
         rowByKey.set(key, row)
         rows.push(row)
       }
@@ -308,6 +319,7 @@
       if (event.event === 'tool_call_started' || event.event === 'render_started') row.state = 'running'
       if (event.errorCode) row.detail = event.errorCode
       if (event.resultSummary) row.summary = event.resultSummary
+      if (event.phase) row.phase = event.phase
       if (event.outcome === 'failed') row.state = 'blocked'
     }
     return rows
@@ -325,13 +337,15 @@
     const status = eventStatus(group.events)
     const rows = processRows(group.events)
     const statusText = statusLabels[status] || status
+    const reasoning = [...group.events].reverse().find((event) => event.event !== 'agent_run_finished' && String(event.reasoningSummary || '').trim())?.reasoningSummary || ''
+    const reasoningBlock = reasoning ? `<details class="reasoning-summary" ${status === 'running' ? 'open' : ''}><summary><i class="reasoning-state" aria-hidden="true"></i><span>思路摘要</span><time>${escapeHtml(statusText)}</time></summary><div>${escapeHtml(reasoning)}</div></details>` : ''
     const runRows = rows.length ? rows.map((row) => {
       const detail = `${renderToolSummary(row.summary)}${row.detail ? `<div class="tool-detail">${escapeHtml(row.detail)}</div>` : ''}`
       const duration = row.durationMs !== null && row.durationMs !== undefined ? `${Math.max(0, Math.round(Number(row.durationMs) || 0))} ms` : ''
       return `<details class="tool-row" ${row.state === 'blocked' ? 'open' : ''}><summary><i class="tool-state ${escapeHtml(row.state)}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><time>${escapeHtml(duration || statusLabels[row.state] || '')}</time></summary>${detail}</details>`
     }).join('') : '<div class="tool-empty">Agent 正在准备当前简历流程…</div>'
     const summary = rows.length ? `已执行 ${rows.length} 项工具` : '正在准备工具'
-    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${status === 'running' ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
+    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${status === 'running' ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${reasoningBlock}${runRows}</details>`
   }
 
   function renderInterleavedTimeline(messages, groups) {
@@ -382,7 +396,16 @@
     return content
   }
 
-  function renderTimeline({ messages, events, sessionReady, activeRun = false, error = '' }) {
+  function renderStreamingState(streamingAssistantText, streamingReasoning) {
+    const reasoning = String(streamingReasoning || '').trim()
+    const assistant = String(streamingAssistantText || '')
+    const blocks = []
+    if (reasoning) blocks.push(`<details class="reasoning-summary" open><summary><i class="reasoning-state" aria-hidden="true"></i><span>思路摘要</span><time>实时</time></summary><div>${escapeHtml(reasoning)}</div></details>`)
+    if (assistant) blocks.push(`<article class="message agent-message streaming-message" aria-label="Agent 正在输出"><div class="message-meta"><span>Agent</span><time>实时</time></div><div class="message-content markdown-body">${renderMarkdown(assistant)}<span class="streaming-caret" aria-hidden="true"></span></div></article>`)
+    return blocks.join('')
+  }
+
+  function renderTimeline({ messages, events, sessionReady, activeRun = false, streamingAssistantText = '', streamingReasoning = '', error = '' }) {
     const groups = eventGroups(events)
     const latestStatus = groups.length ? eventStatus(groups.at(-1).events) : 'idle'
     const displayGroups = groups.slice()
@@ -393,6 +416,8 @@
       })
     }
     const content = renderInterleavedTimeline(messages, displayGroups)
+    const streaming = renderStreamingState(streamingAssistantText, streamingReasoning)
+    if (streaming) content.push(streaming)
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)
     if (!content.length) {
       content.push(`<div class="chat-empty"><strong>${sessionReady ? '从当前简历开始' : '选择工作区后开始'}</strong><p>${sessionReady ? '告诉 Agent 你想投递什么岗位，或直接说出要调整的内容。它会先读取草稿，再逐步完成检查、渲染和真实 A4 验收。' : '选择一个简历工作区，Agent 才能读取隔离草稿并执行制作流程。'}</p></div>`)

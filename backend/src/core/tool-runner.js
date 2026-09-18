@@ -1,6 +1,7 @@
 import { contextFields } from './context.js'
 import { emitWorkflowEvent, WORKFLOW_EVENTS, workflowContext } from './event-catalog.js'
 import { createLogger } from './logger.js'
+import crypto from 'node:crypto'
 
 async function emitToolEvent(options, payload) {
   try { await options.onEvent?.(payload) } catch { /* observability must not break the tool */ }
@@ -22,10 +23,11 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
   if (typeof handler !== 'function') throw new Error('tool handler is required')
   const logger = options.logger || createLogger({ component: 'cvagent-tool', context: contextFields(task.context) })
   const startedAt = Date.now()
+  const toolCallId = `tool-${crypto.randomUUID()}`
   const taskWithSession = options.sessionId ? { ...task, sessionId: options.sessionId } : task
-  const base = { toolName: String(toolName), ...workflowContext(taskWithSession) }
+  const base = { toolName: String(toolName), toolCallId, ...workflowContext(taskWithSession) }
   await logger.info('tool_call_started', base)
-  await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_STARTED, task: taskWithSession, toolName: String(toolName) })
+  await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_STARTED, task: taskWithSession, toolName: String(toolName), toolCallId })
   const workflow = options.workflowEvent
   const emit = async (stage, result, error, resultSummary = {}) => {
     const event = resolveWorkflowEvent(workflow, stage, { result, error, task, toolName })
@@ -42,6 +44,7 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
       event,
       task: eventTask,
       toolName: String(toolName),
+      toolCallId,
       durationMs: Date.now() - startedAt,
       resultSummary: { ...resultSummary, ...fields },
     })
@@ -52,13 +55,13 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
     const resultSummary = options.resultSummary?.(result) || {}
     const durationMs = Date.now() - startedAt
     await logger.info('tool_call_succeeded', { ...base, durationMs, resultSummary })
-    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), durationMs, resultSummary })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), toolCallId, durationMs, resultSummary })
     await emit('succeeded', result, null, resultSummary)
     await options.onSuccess?.({ toolName: String(toolName), result, task })
     return result
   } catch (error) {
     await logger.error('tool_call_failed', { ...base, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED'), errorMessage: String(error?.message || error) })
-    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_FAILED, task: taskWithSession, toolName: String(toolName), durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED') })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_FAILED, task: taskWithSession, toolName: String(toolName), toolCallId, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED') })
     await emit('failed', null, error)
     throw error
   }

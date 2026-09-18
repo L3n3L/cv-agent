@@ -33,7 +33,7 @@ function safeMessages(messages) {
 
 function safeWorkflowEvent(event) {
   if (!event || typeof event !== 'object') return null
-  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'mode', 'outcome', 'durationMs', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state']
+  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'outcome', 'durationMs', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reasoningSummary', 'delta', 'messageId']
   const value = {}
   for (const key of allowed) {
     if (event[key] !== undefined && event[key] !== null) value[key] = event[key]

@@ -231,3 +231,60 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     await fs.rm(workspaceRoot, { recursive: true, force: true })
   }
 })
+
+test('streaming Agent sends ordered answer deltas while keeping reasoning private', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-agent-stream-integration-'))
+  const sessionDirectory = path.join(workspaceRoot, 'sessions')
+  const logDirectory = path.join(workspaceRoot, 'logs')
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# 测试候选人\n\n## 教育经历\n\n测试大学\n', 'utf8')
+  const streamChunks = async function* streamChunks(chunks) {
+    for (const chunk of chunks) {
+      await Promise.resolve()
+      yield chunk
+    }
+  }
+  const server = createServer({
+    logger: createLogger({ directory: logDirectory, component: 'agent-stream-integration-test' }),
+    sessionDirectory,
+    agentFactory: async () => ({
+      async streamEvents() {
+        return {
+          messages: (async function* messages() {
+            yield {
+              role: 'assistant',
+              id: 'message-stream-1',
+              text: streamChunks(['已读取', '当前简历。']),
+              reasoning: streamChunks(['private chain of thought']),
+            }
+          })(),
+          toolCalls: (async function* toolCalls() {})(),
+          output: Promise.resolve({ messages: [{ role: 'assistant', content: '已读取当前简历。' }] }),
+        }
+      },
+    }),
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const bootstrapped = await jsonRequest(`${base}/api/agent/bootstrap`, { workspaceRoot, resumePath: 'resume.md', targetPages: 1 })
+    const sessionId = bootstrapped.body.sessionId
+    const sseResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`)
+    const startedAt = Date.now()
+    const ssePromise = waitForSseEvents(sseResponse, (events) => events.some((event) => event.payload?.event === 'agent_run_finished'))
+    const run = await jsonRequest(`${base}/api/agent/run?stream=1`, { sessionId, workspaceRoot, resumePath: 'resume.md', message: '请读取当前简历。' })
+    assert.equal(run.response.status, 202)
+    assert.equal(run.body.accepted, true)
+    assert.ok(Date.now() - startedAt < 500, 'stream mode should acknowledge without waiting for the Agent result')
+    const events = await ssePromise
+    const deltas = events.filter((event) => event.payload?.event === 'assistant_delta').map((event) => event.payload.delta)
+    assert.deepEqual(deltas, ['已读取', '当前简历。'])
+    assert.ok(events.some((event) => event.payload?.event === 'agent_run_started' && event.payload?.reasoningSummary))
+    const session = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+    assert.ok(session.session.workflowEvents.every((event) => !String(event.delta || '').includes('private chain of thought')))
+  } finally {
+    await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})

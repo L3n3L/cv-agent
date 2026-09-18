@@ -24,7 +24,7 @@ Node `--test` 负责断言 HTTP 状态、session task、SSE 事件顺序、版�
 
 首次先使用现有浏览器自动化完成真实截图验收；若项目加入 Playwright，则将高价值场景固化为其 trace、控制台和截图产物。视觉基线固定浏览器、字体、DPR 与视口，以避免跨环境像素噪音。[官方视觉比较文档](https://playwright.dev/docs/next/test-snapshots)
 
-需要手动重放浏览器链路时，使用 `backend/scripts/agent-chat-browser-server.mjs` 启动独立的、脚本化 Agent 后端，并让前端代理指向该端口。该脚本只服务本地测试，不属于生产 API，也不调用模型服务。
+需要手动重放浏览器链路时，使用 `npm run test:browser-harness` 启动 `backend/scripts/agent-chat-browser-server.mjs`。它使用 `support/scripted-resume-agent.js` 注入确定性 Agent，并让前端代理指向该端口。该脚本只服务本地测试，不属于生产 API，也不调用模型服务；完整说明见 `backend/scripts/README.md`。
 
 ### 4. 证据包
 

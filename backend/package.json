@@ -10,7 +10,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "logs": "node scripts/log-inspect.mjs summary",
     "logs:tail": "node scripts/log-inspect.mjs tail",
-    "logs:sanitize": "node scripts/sanitize-legacy-logs.mjs"
+    "logs:sanitize": "node scripts/sanitize-legacy-logs.mjs",
+    "test:browser-harness": "node scripts/agent-chat-browser-server.mjs"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",

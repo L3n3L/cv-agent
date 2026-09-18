@@ -347,11 +347,22 @@ body { letter-spacing:-.005em; }
   .app-shell.assistant-open .assistant-drawer { width:100%; height:min(680px,70dvh); }
 }
 
-/* The Agent stream starts at the top; its workspace context remains in the session state, not a second toolbar. */
-.assistant-drawer .drawer-header,
+/* Keep a small Agent chrome row in the panel; it participates in normal flow. */
+.assistant-drawer .drawer-header {
+  display:flex;
+  min-height:40px;
+  align-items:center;
+  justify-content:space-between;
+  margin:0;
+  padding:0 0 10px;
+  border-bottom:1px solid #e8eaed;
+}
+.assistant-drawer .drawer-header h2 { margin:0; color:#171b20; font-size:17px; font-weight:600; letter-spacing:-.03em; }
+.assistant-drawer .drawer-header .ghost-button { padding:0; border:0; color:#7b838c; background:transparent; font-size:10px; }
+.assistant-drawer .drawer-header .ghost-button:hover { color:#343a41; background:transparent; }
 .assistant-drawer .assistant-context { display:none; }
-.assistant-drawer #assistantContent { height:100%; }
-.assistant-drawer .chat-stream { padding-top:4px; }
+.assistant-drawer #assistantContent { height:calc(100% - 51px); }
+.assistant-drawer .chat-stream { padding-top:14px; }
 
 /* The Agent is a full-height peer of main-stage. The route header therefore cannot push the chat down. */
 .app-shell.assistant-open { grid-template-columns:var(--sidebar-width) 8px minmax(0,1fr) 8px var(--assistant-width); }

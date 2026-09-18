@@ -12,7 +12,9 @@ test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height pee
   assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\) 8px var\(--assistant-width\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:5; grid-row:1; width:auto; height:100%;/)
   assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ grid-column:4; grid-row:1; display:block; \}/)
-  assert.match(css, /\.assistant-drawer \.drawer-header,[\s\S]*?\.assistant-drawer \.assistant-context \{ display:none; \}/)
+  assert.match(css, /\.assistant-drawer \.drawer-header \{[\s\S]*?display:flex;[\s\S]*?border-bottom:1px solid #e8eaed;/)
+  assert.match(css, /\.assistant-drawer \.assistant-context \{ display:none; \}/)
+  assert.match(css, /\.assistant-drawer #assistantContent \{ height:calc\(100% - 51px\); \}/)
 })
 
 test('frontend moves the full-height Agent below the workbench on narrow screens', async () => {

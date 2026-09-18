@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('.', import.meta.url))
 const port = Number(process.env.CVAGENT_FRONTEND_PORT || 3191)
 const apiOrigin = String(process.env.CVAGENT_API_ORIGIN || 'http://127.0.0.1:3180').replace(/\/+$/, '')
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' }
+const reactDist = join(root, 'react', 'dist')
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' }
 
 function proxyLog(level, event, fields = {}) {
   process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level, event, component: 'cvagent-frontend-proxy', ...fields })}\n`)
@@ -82,9 +83,12 @@ createServer(async (request, response) => {
     await proxyApi(request, response, url)
     return
   }
-  const requested = url.pathname === '/' ? '/index.html' : url.pathname
-  const file = normalize(join(root, requested))
-  if (!file.startsWith(root)) { response.writeHead(403); response.end('Forbidden'); return }
+  const reactRequest = url.pathname === '/react' || url.pathname.startsWith('/react/')
+  const publicRoot = reactRequest ? reactDist : root
+  const publicPath = reactRequest ? url.pathname.replace(/^\/react\/?/, '/') : url.pathname
+  const requested = publicPath === '/' ? '/index.html' : publicPath
+  const file = normalize(join(publicRoot, requested))
+  if (!file.startsWith(publicRoot)) { response.writeHead(403); response.end('Forbidden'); return }
   try { const body = await readFile(file); response.writeHead(200, { 'Content-Type': types[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' }); response.end(body) }
   catch { response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('Not Found') }
 }).listen(port, '127.0.0.1', () => proxyLog('info', 'frontend_started', { port, apiOrigin }))

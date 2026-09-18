@@ -462,6 +462,25 @@ try {
 } catch {}
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+const WORKBENCH_MIN_PANE_WIDTH = 280
+const WORKBENCH_DIVIDER_WIDTH = 1
+const WORKBENCH_SCROLLBAR_RESERVE = 10
+const SHELL_DIVIDER_COUNT = 2
+
+function normalizeDesktopLayoutPrefs() {
+  if (window.innerWidth < 961 || !previewOpen) return
+  const minimumWorkbenchWidth = WORKBENCH_MIN_PANE_WIDTH * 2 + WORKBENCH_DIVIDER_WIDTH + WORKBENCH_SCROLLBAR_RESERVE
+  const minimumAssistantWidth = 300
+  const shellBorderWidth = 2
+  const maximumSidebarWidth = Math.max(220, window.innerWidth - shellBorderWidth - SHELL_DIVIDER_COUNT - minimumWorkbenchWidth - minimumAssistantWidth)
+  if (!layoutPrefs.collapsed) layoutPrefs.sidebar = Math.min(layoutPrefs.sidebar, maximumSidebarWidth)
+  const availableAssistantWidth = window.innerWidth - shellBorderWidth - SHELL_DIVIDER_COUNT - (layoutPrefs.collapsed ? 0 : layoutPrefs.sidebar) - minimumWorkbenchWidth
+  layoutPrefs.assistant = clamp(layoutPrefs.assistant, minimumAssistantWidth, Math.max(minimumAssistantWidth, availableAssistantWidth))
+  const workbenchWidth = window.innerWidth - shellBorderWidth - SHELL_DIVIDER_COUNT - (layoutPrefs.collapsed ? 0 : layoutPrefs.sidebar) - layoutPrefs.assistant
+  const maximumEditorWidth = Math.max(WORKBENCH_MIN_PANE_WIDTH, workbenchWidth - WORKBENCH_MIN_PANE_WIDTH - WORKBENCH_DIVIDER_WIDTH)
+  if (layoutPrefs.editor > 0) layoutPrefs.editor = clamp(layoutPrefs.editor, WORKBENCH_MIN_PANE_WIDTH, maximumEditorWidth)
+}
+
 function saveLayoutPrefs() {
   try { localStorage.setItem(layoutStorageKey, JSON.stringify(layoutPrefs)) } catch {}
 }
@@ -503,13 +522,15 @@ function updateResize(type, clientX) {
     }
   }
   if (type === 'assistant') {
-    layoutPrefs.assistant = clamp(window.innerWidth - clientX, 300, 520)
+    const minimumWorkbenchWidth = WORKBENCH_MIN_PANE_WIDTH * 2 + WORKBENCH_DIVIDER_WIDTH + WORKBENCH_SCROLLBAR_RESERVE
+    const availableAssistantWidth = window.innerWidth - 2 - SHELL_DIVIDER_COUNT - (layoutPrefs.collapsed ? 0 : layoutPrefs.sidebar) - minimumWorkbenchWidth
+    layoutPrefs.assistant = clamp(window.innerWidth - clientX, 300, Math.max(300, availableAssistantWidth))
   }
   if (type === 'editor') {
     const split = $('.workbench-split')
     if (!split) return
     const rect = split.getBoundingClientRect()
-    layoutPrefs.editor = clamp(clientX - rect.left, 280, Math.max(320, rect.width - 328))
+    layoutPrefs.editor = clamp(clientX - rect.left, WORKBENCH_MIN_PANE_WIDTH, Math.max(WORKBENCH_MIN_PANE_WIDTH, rect.width - WORKBENCH_MIN_PANE_WIDTH - WORKBENCH_DIVIDER_WIDTH))
   }
   applyLayoutPrefs()
 }
@@ -559,12 +580,17 @@ function bindResizableLayout() {
       const split = $('.workbench-split')
       if (!split) return
       const rect = split.getBoundingClientRect()
-      if (event.key === 'Home') layoutPrefs.editor = 280
-      else if (event.key === 'End') layoutPrefs.editor = Math.max(320, rect.width - 328)
-      else layoutPrefs.editor = clamp((layoutPrefs.editor || rect.width / 2) + (event.key === 'ArrowRight' ? 16 : -16), 280, Math.max(320, rect.width - 328))
+      const maximumEditorWidth = Math.max(WORKBENCH_MIN_PANE_WIDTH, rect.width - WORKBENCH_MIN_PANE_WIDTH - WORKBENCH_DIVIDER_WIDTH)
+      if (event.key === 'Home') layoutPrefs.editor = WORKBENCH_MIN_PANE_WIDTH
+      else if (event.key === 'End') layoutPrefs.editor = maximumEditorWidth
+      else layoutPrefs.editor = clamp((layoutPrefs.editor || rect.width / 2) + (event.key === 'ArrowRight' ? 16 : -16), WORKBENCH_MIN_PANE_WIDTH, maximumEditorWidth)
     }
     applyLayoutPrefs()
     saveLayoutPrefs()
+  })
+  window.addEventListener('resize', () => {
+    normalizeDesktopLayoutPrefs()
+    applyLayoutPrefs()
   })
   $('#sidebarToggle').addEventListener('click', () => {
     layoutPrefs.collapsed = !layoutPrefs.collapsed
@@ -638,6 +664,7 @@ function setPreviewOpen(open) {
   drawer.hidden = !visible
   drawer.setAttribute('aria-hidden', String(!visible))
   $('#appShell').classList.toggle('assistant-open', visible)
+  normalizeDesktopLayoutPrefs()
   applyLayoutPrefs()
   const button = $('#workbenchAssistantButton')
   if (button) button.textContent = visible ? '收起 Agent' : '打开 Agent'

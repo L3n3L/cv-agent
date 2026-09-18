@@ -39,6 +39,7 @@
 - 工作台底部同时叠加了 `20px` 外层 padding 和固定高度计算，导致底部操作栏下方还出现一段空白；
 - Agent 打开后 `.workbench-view` 变为 `display:contents`，普通工作台的高度修复不会继承，旧的固定高度仍会让两个工作面提前结束；
 - Agent 收起后 `.workbench-view` 恢复默认的 `32px` 左右页面 padding，使 Markdown 模块左侧出现与模块内容无关的空白；
+- 三栏标题原先分别受侧栏、主路由标题和 Agent 抽屉自己的顶部 padding 影响，视觉上不在同一条标题顶线上；
 - 这些空间不是简历纸张的内部页边距，不能通过修改模板的 `pageMargin` 来解决。
 
 本轮以用户提供的工作台截图为视觉基线：
@@ -49,6 +50,8 @@
 - 工作台在桌面端填满路由剩余高度，不再在底栏下方留下无意义空带；
 - Agent 打开时，Markdown/A4 工作面从路由标题栏底部开始填满到视口底部；
 - Agent 收起时，Markdown/A4 工作面直接贴合主工作区左右边界，模块之间仍只保留 1px 分隔线；
+- 桌面端需要以统一布局契约对齐侧栏、主路由、Markdown、A4 和 Agent 的标题基线；
+- 不能用单独给某个模块增加 `padding-top` 或 `margin-top` 的方式制造假对齐，后续由共享 `PaneHeader` 和布局 token 一次性解决；
 - 不改变 Markdown/A4/Agent 三个模块之间的 1px 分隔线，也不改变 A4 fit-to-width 计算。
 
 ### 1.4 CSS 覆盖历史导致视觉漂移

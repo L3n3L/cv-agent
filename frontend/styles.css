@@ -406,7 +406,7 @@ body { letter-spacing:-.005em; }
 }
 
 @media (min-width:961px) {
-  .app-shell.assistant-open .workbench-split { display:grid; width:100%; min-width:0; grid-template-columns:minmax(0,var(--editor-width,1fr)) 1px minmax(0,1fr); }
+  .app-shell.assistant-open .workbench-split { display:grid; width:100%; min-width:0; grid-template-columns:minmax(280px,var(--editor-width,1fr)) 1px minmax(280px,1fr); }
   .app-shell.assistant-open .editor-pane,
   .app-shell.assistant-open .resize-editor,
   .app-shell.assistant-open .direct-preview-pane { grid-column:auto; grid-row:auto; }

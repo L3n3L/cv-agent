@@ -39,7 +39,7 @@ test('frontend moves the full-height Agent below the workbench on narrow screens
 test('frontend keeps three columns for desktop-sized 961-1100px viewports', async () => {
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
   assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?grid-template-columns:var\(--sidebar-width\) 1px minmax\(0,1fr\) 1px minmax\(280px,min\(var\(--assistant-width\),32vw\)\);/)
-  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 1px minmax\(0,1fr\); \}/)
+  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(280px,var\(--editor-width,1fr\)\) 1px minmax\(280px,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-pane \{ grid-column:auto; grid-row:auto; \}/)
   assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ grid-template-columns:minmax\(0,1fr\) 1px minmax\(0,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.workbench-split \{ width:100%; height:calc\(100dvh - 122px\); grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 1px minmax\(0,1fr\); \}/)
@@ -47,8 +47,14 @@ test('frontend keeps three columns for desktop-sized 961-1100px viewports', asyn
 
 test('frontend keeps the measured A4 fit when Agent is open on desktop widths', async () => {
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
+  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(280px,var\(--editor-width,1fr\)\) 1px minmax\(280px,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap,[\s\S]*?width:var\(--preview-width,429px\); height:var\(--preview-height,607px\); transform:none;/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap iframe,[\s\S]*?transform:scale\(var\(--preview-scale,.54\)\);/)
+  assert.match(app, /const WORKBENCH_MIN_PANE_WIDTH = 280/)
+  assert.match(app, /const WORKBENCH_SCROLLBAR_RESERVE = 10/)
+  assert.match(app, /function normalizeDesktopLayoutPrefs\(\)/)
+  assert.match(app, /normalizeDesktopLayoutPrefs\(\)[\s\S]*?applyLayoutPrefs\(\)/)
 })
 
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {
@@ -58,4 +64,22 @@ test('frontend route changes reset scroll and SSE proxy tolerates client disconn
   assert.match(app, /async function renderTemplates\(\) \{[\s\S]*?const viewport = \$\('#routeView'\)[\s\S]*?viewport\.scrollTop = 0/)
   assert.match(proxy, /if \(response\.headersSent \|\| response\.destroyed \|\| response\.writableEnded \|\| request\.aborted\)/)
   assert.match(proxy, /proxyLog\('info', 'api_proxy_client_closed'/)
+})
+
+test('React/Vite shell preserves the legacy DOM contract while migration is staged', async () => {
+  const reactRoot = path.join(frontendRoot, 'react')
+  const packageJson = JSON.parse(await fs.readFile(path.join(reactRoot, 'package.json'), 'utf8'))
+  const source = await fs.readFile(path.join(reactRoot, 'src', 'main.tsx'), 'utf8')
+  const viteConfig = await fs.readFile(path.join(reactRoot, 'vite.config.ts'), 'utf8')
+  const proxy = await fs.readFile(path.join(frontendRoot, 'server.mjs'), 'utf8')
+  assert.equal(packageJson.scripts.build, 'tsc --noEmit && vite build')
+  assert.equal(packageJson.scripts.typecheck, 'tsc --noEmit')
+  assert.match(source, /id="appShell"/)
+  assert.match(source, /id="routeContent"/)
+  assert.match(source, /id="assistantDrawer"/)
+  assert.match(source, /className="workbench|className="resize-handle resize-sidebar"/)
+  assert.match(source, /const scripts = \['api-client\.js', 'client-events\.js', 'agent-chat\.js', 'app\.js'\]/)
+  assert.match(viteConfig, /base: '\/react\/'/)
+  assert.match(proxy, /const reactDist = join\(root, 'react', 'dist'\)/)
+  assert.match(proxy, /const reactRequest = url\.pathname === '\/react' \|\| url\.pathname\.startsWith\('\/react\/'\)/)
 })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PaneHeader } from '../../components/PaneHeader'
 
 export type PresentationLayout = {
@@ -29,6 +29,11 @@ export function A4Pane({ templateName, layout, onApplyTuning, onOpenFullPreview 
     await onApplyTuning(values)
     setTuningOpen(false)
   }
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('cvagent:a4-pane-mounted')))
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
 
   return (
     <>

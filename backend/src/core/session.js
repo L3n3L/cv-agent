@@ -1,11 +1,12 @@
 import { createResumeTask, prepareResumeTask } from './workflow.js'
 
-export function createResumeSession({ workspace, resumePath, templateId, templateRevision, targetPages, sessionId = null, sourceHash = null }) {
+export function createResumeSession({ workspace, resumePath, templateId, templateRevision, targetPages, intakeRequired = false, sessionId = null, sourceHash = null }) {
   const now = new Date().toISOString()
   const task = prepareResumeTask(createResumeTask({
     workspaceId: workspace.id,
     resumeId: resumePath,
     targetPages,
+    intakeRequired,
     templateId,
     templateRevision,
   }))

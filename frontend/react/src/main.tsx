@@ -41,11 +41,12 @@ function Sidebar() {
       <PaneHeader
         variant="brand"
         title="CVAgent"
-        actions={<button className="sidebar-toggle" id="sidebarToggle" type="button" aria-label="收起导航栏" aria-expanded="true"><span aria-hidden="true">‹</span><small>收起</small></button>}
+        actions={<button className="sidebar-toggle" id="sidebarToggle" type="button" aria-label="收起导航栏" aria-expanded="true"><svg className="sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4" /><path d="M9 3v18" /></svg><small>收起</small></button>}
       />
       <PaneHeader variant="workspace" id="workspaceSwitcher" ariaExpanded={false} title="选择工作区" titleId="workspaceLabel" leading={<Icon name="folder" />} trailing="⌄" />
       <div className="workspace-menu" id="workspaceMenu" hidden>
         <div id="workspaceOptions"><small>正在读取工作区…</small></div>
+        <button type="button" id="workspaceCreateButton">新建空白工作区<small>从一份空白简历开始</small></button>
         <button type="button" id="workspaceImportButton">选择简历工作区<small>从本地目录导入 Markdown、模板和素材</small></button>
         <input id="workspaceFiles" type="file" {...{ webkitdirectory: '', directory: '' }} multiple hidden />
       </div>

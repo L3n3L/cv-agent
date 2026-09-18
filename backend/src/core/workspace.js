@@ -16,6 +16,21 @@ const ASSET_MIME_TYPES = Object.freeze({
   '.webp': 'image/webp',
 })
 
+export const EMPTY_RESUME_TEMPLATE = `# 未命名候选人
+
+## 求职意向
+
+待补充
+
+## 教育经历
+
+待补充
+
+## 工作 / 项目经历
+
+待补充
+`
+
 function workspaceError(message, code = 'WORKSPACE_INVALID') {
   return Object.assign(new Error(message), { code })
 }
@@ -91,6 +106,19 @@ export async function readWorkspaceText(root, relativePath) {
   const filePath = resolveInside(workspace.root, safePath)
   await assertRegularFile(filePath)
   return { ...workspace, relativePath: safePath, absolutePath: filePath, content: await fs.readFile(filePath, 'utf8') }
+}
+
+export async function createResumeSource(root, relativePath = 'resume.md', content = EMPTY_RESUME_TEMPLATE) {
+  const workspace = await ensureWorkspace(root)
+  const safePath = assertRelativePath(relativePath)
+  if (!['.md', '.markdown'].includes(path.extname(safePath).toLowerCase())) throw workspaceError('resumePath must point to a Markdown file', 'WORKSPACE_RESUME_INVALID')
+  const source = String(content || '')
+  if (!source.trim()) throw workspaceError('resume source cannot be empty', 'WORKSPACE_RESUME_INVALID')
+  const filePath = resolveInside(workspace.root, safePath)
+  const existing = await fs.lstat(filePath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+  if (existing) throw workspaceError('resume source already exists', 'WORKSPACE_RESUME_EXISTS')
+  await writeAtomic(filePath, source)
+  return { ...workspace, relativePath: safePath, absolutePath: filePath, content: source }
 }
 
 export async function readWorkspaceAsset(root, relativePath) {

@@ -82,7 +82,8 @@ function publicWorkspace(record) {
   return {
     id: record.id,
     name: record.name,
-    resumeName: path.basename(record.resumePath || 'resume.md'),
+    resumeName: record.resumePath ? path.basename(record.resumePath) : '',
+    hasResume: Boolean(record.resumePath),
     updatedAt: record.updatedAt,
     createdAt: record.createdAt,
     fileCount: Number(record.fileCount || 0),
@@ -92,7 +93,7 @@ function publicWorkspace(record) {
 async function readRecord(root) {
   const manifestPath = path.join(root, MANIFEST_RELATIVE_PATH)
   const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'))
-  if (!manifest?.id || !WORKSPACE_ID_PATTERN.test(manifest.id) || !manifest.resumePath) throw workspaceError('workspace manifest is invalid', 'WORKSPACE_MANIFEST_INVALID')
+  if (!manifest?.id || !WORKSPACE_ID_PATTERN.test(manifest.id) || (manifest.resumePath != null && typeof manifest.resumePath !== 'string')) throw workspaceError('workspace manifest is invalid', 'WORKSPACE_MANIFEST_INVALID')
   return { ...manifest, root, manifestPath }
 }
 
@@ -158,12 +159,52 @@ export function createWorkspaceRegistry(options = {}) {
     }
   }
 
+  async function createEmpty({ name }) {
+    await ensureDirectory()
+    const id = `ws_${crypto.randomUUID()}`
+    const root = path.join(directory, id)
+    const createdAt = new Date().toISOString()
+    const manifest = {
+      schemaVersion: 1,
+      id,
+      name: String(name || '未命名工作区').trim().slice(0, 120) || '未命名工作区',
+      resumePath: null,
+      origin: 'empty_workspace',
+      fileCount: 0,
+      byteCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    }
+    try {
+      await fs.mkdir(root, { recursive: true })
+      await writeAtomic(path.join(root, MANIFEST_RELATIVE_PATH), `${JSON.stringify(manifest, null, 2)}\n`)
+      return { ...manifest, root, manifestPath: path.join(root, MANIFEST_RELATIVE_PATH) }
+    } catch (error) {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  async function setResumePath(workspaceId, resumePath) {
+    const record = await resolve(workspaceId)
+    const relativePath = assertRelativePath(resumePath)
+    if (!['.md', '.markdown'].includes(path.extname(relativePath).toLowerCase())) throw workspaceError('resumePath must point to a Markdown file', 'WORKSPACE_RESUME_INVALID')
+    const next = {
+      ...record,
+      resumePath: relativePath,
+      fileCount: Math.max(1, Number(record.fileCount || 0)),
+      updatedAt: new Date().toISOString(),
+    }
+    const { root, manifestPath, ...manifest } = next
+    await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    return next
+  }
+
   async function metadata(workspaceId) {
     return publicWorkspace(await resolve(workspaceId))
   }
 
-  return { directory, ensureDirectory, resolve, list, importFiles, metadata, publicWorkspace }
+  return { directory, ensureDirectory, resolve, list, importFiles, createEmpty, setResumePath, metadata, publicWorkspace }
 }
 
 export { MAX_ASSET_BYTES, MAX_FILES, MAX_TEXT_BYTES, MAX_TOTAL_BYTES }
-

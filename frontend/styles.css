@@ -500,3 +500,57 @@ body { letter-spacing:-.005em; }
 .assistant-drawer #assistantContent { height:calc(100% - var(--shell-header-height)); }
 .app-shell.assistant-open .assistant-drawer { padding:0; }
 .app-shell.assistant-open .assistant-drawer #assistantContent { box-sizing:border-box; padding:0 var(--pane-inline-padding); }
+
+/* A collapsed rail is a true icon-only state: retain only its fixed restore control. */
+.sidebar-collapsed .sidebar > .brand-lockup {
+  display:flex;
+  width:0;
+  height:0;
+  min-height:0;
+  flex:0 0 0;
+  padding:0;
+  overflow:visible;
+}
+.sidebar-collapsed .sidebar > .brand-lockup .pane-header-copy { display:none; }
+.sidebar-collapsed .sidebar > .brand-lockup .pane-header-actions { min-width:0; }
+.sidebar > .brand-lockup .sidebar-toggle {
+  display:flex;
+  width:auto;
+  height:20px;
+  align-items:center;
+  gap:3px;
+  padding:2px 3px;
+  border:0;
+  border-radius:4px;
+  background:transparent;
+}
+.sidebar > .brand-lockup .sidebar-toggle:hover { color:#343a41; background:#eef1f4; }
+.sidebar-toggle-icon {
+  display:none;
+  width:16px;
+  height:16px;
+  color:#58616d;
+  fill:none;
+  stroke:currentColor;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  stroke-width:1.6;
+}
+.sidebar-collapsed .sidebar > .brand-lockup .sidebar-toggle {
+  position:fixed;
+  display:grid;
+  top:14px;
+  left:14px;
+  z-index:41;
+  width:28px;
+  height:28px;
+  margin:0;
+  padding:0;
+  border:0;
+  border-radius:4px;
+  background:transparent;
+  box-shadow:none;
+  pointer-events:auto;
+}
+.sidebar-collapsed .sidebar > .brand-lockup .sidebar-toggle-icon { display:block; }
+.sidebar-collapsed .sidebar > .brand-lockup .sidebar-toggle small { display:none; }

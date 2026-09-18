@@ -27,14 +27,23 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
   await logger.info('tool_call_started', base)
   await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_STARTED, task: taskWithSession, toolName: String(toolName) })
   const workflow = options.workflowEvent
-  const emit = async (stage, result, error) => {
+  const emit = async (stage, result, error, resultSummary = {}) => {
     const event = resolveWorkflowEvent(workflow, stage, { result, error, task, toolName })
     if (!event) return
     const resultContext = result && typeof result === 'object' ? workflowContext(result) : {}
+    const eventTask = { ...taskWithSession, context: { ...taskWithSession.context, ...resultContext } }
+    const fields = resolveWorkflowFields(workflow, stage, { result, error, task, toolName })
     await emitWorkflowEvent(logger, event, taskWithSession, {
       ...resultContext,
-      ...resolveWorkflowFields(workflow, stage, { result, error, task, toolName }),
+      ...fields,
       durationMs: Date.now() - startedAt,
+    })
+    await emitToolEvent(options, {
+      event,
+      task: eventTask,
+      toolName: String(toolName),
+      durationMs: Date.now() - startedAt,
+      resultSummary: { ...resultSummary, ...fields },
     })
   }
   await emit('started')
@@ -44,7 +53,7 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
     const durationMs = Date.now() - startedAt
     await logger.info('tool_call_succeeded', { ...base, durationMs, resultSummary })
     await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, task: taskWithSession, toolName: String(toolName), durationMs, resultSummary })
-    await emit('succeeded', result)
+    await emit('succeeded', result, null, resultSummary)
     await options.onSuccess?.({ toolName: String(toolName), result, task })
     return result
   } catch (error) {

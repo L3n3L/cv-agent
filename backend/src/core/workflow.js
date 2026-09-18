@@ -26,6 +26,7 @@ export function createResumeTask(input = {}) {
   const targetPages = Math.max(1, Math.min(3, Number(input.targetPages) || 1))
   return {
     context: createTaskContext(input), state: TASK_STATES.INTAKE, targetPages,
+    intakeRequired: Boolean(input.intakeRequired),
     acceptance: { minOccupancy: Number.isFinite(Number(input.minOccupancy)) ? Number(input.minOccupancy) : 0.9, maxSpread: Number.isFinite(Number(input.maxSpread)) ? Number(input.maxSpread) : targetPages > 1 ? 0.08 : 1 },
     artifacts: { contentVersion: null, templateRevision: null, renderId: null }, measurements: null, blockers: [],
   }
@@ -40,6 +41,7 @@ export function recordDraftWrite(task, artifact = {}) {
   const next = task.state === TASK_STATES.INTAKE || task.state === TASK_STATES.BLOCKED ? move(task, TASK_STATES.PREPARED) : clone(task)
   next.state = TASK_STATES.DRAFTING
   next.context.contentVersion = String(artifact.contentVersion || '').trim() || next.context.contentVersion
+  next.intakeRequired = Boolean(next.intakeRequired && artifact.intakeComplete !== true)
   next.context.renderId = null
   next.artifacts = { contentVersion: next.context.contentVersion, templateRevision: next.context.templateRevision, renderId: null }
   next.measurements = null
@@ -97,6 +99,7 @@ export function verifyResumeTask(task) {
   const underfilled = measurement.occupancy.filter((ratio) => ratio < task.acceptance.minOccupancy)
   const spread = measurement.occupancy.length > 1 ? Math.max(...measurement.occupancy) - Math.min(...measurement.occupancy) : 0
   const blockers = []
+  if (task.intakeRequired) blockers.push('尚未完成首次信息收集')
   if (measurement.pageCount !== task.targetPages || measurement.occupancy.length !== task.targetPages) blockers.push(`目标为 ${task.targetPages} 页，但实际为 ${measurement.pageCount} 页或缺少逐页占用率`)
   if (measurement.overflow) blockers.push('检测到内容溢出')
   if (underfilled.length) blockers.push(`有 ${underfilled.length} 页低于最低占用率 ${task.acceptance.minOccupancy}`)

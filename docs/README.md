@@ -11,6 +11,10 @@
 - [Agent 产品复盘](../backend/docs/agent-product-retrospective.zh.md)：Deep Agents Harness 与简历领域内核的职责边界。
 - [React/Vite 布局复盘](../frontend/UI_LAYOUT_REACT_VITE_RECAP.zh.md)：当前工作台的组件、布局、视觉 token 与截图验收要求。
 
+## 当前执行中的测试规格
+
+- [Agent 聊天链路与功能联调](../specs/agent-chat-integration-testing/requirements.md)：从需求、设计到任务清单的可重复 Agent 回放、浏览器与截图验收计划。
+
 ## 归档规则
 
 - 已完成的实施规格、旧 UI 研究、阶段验收和已废弃的 DSH 像素对照统一放在 [archive/2026-09-completed-work](archive/2026-09-completed-work/README.md)。

@@ -15,7 +15,7 @@ import { createSessionStore } from './core/session-store.js'
 import { safeWorkflowSummary } from './core/workflow-summary.js'
 import { createResumeToolHandlers, createResumeTools } from './agent/resume-tools.js'
 import { measureSchema, presentationSchema, qualitySchema, templateCopySchema, templateSelectSchema, writeSchema } from './agent/schemas.js'
-import { archiveResumeVersion, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
+import { archiveResumeVersion, createResumeSource, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
 import { createWorkspaceRegistry } from './core/workspace-registry.js'
 import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/workflow.js'
 import { copyWorkspaceTemplate, listWorkspaceTemplates, loadWorkspaceTemplate, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
@@ -216,6 +216,10 @@ export function createServer(options = {}) {
       void handleWorkspaceImport(request, response, { workspaceRegistry })
       return
     }
+    if (request.method === 'POST' && request.url === '/api/workspaces/create') {
+      void handleWorkspaceCreate(request, response, { workspaceRegistry })
+      return
+    }
     if (request.method === 'GET' && request.url?.startsWith('/api/session?')) {
       void handleSession(request, response, { sessions, sessionStore, serverLogger: requestLogger, workspaceRegistry })
       return
@@ -352,6 +356,16 @@ async function handleWorkspaceImport(request, response, options) {
     const code = String(error?.code || 'WORKSPACE_IMPORT_FAILED')
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_INVALID', 'WORKSPACE_FILES_REQUIRED', 'WORKSPACE_TOO_MANY_FILES', 'WORKSPACE_IMPORT_TOO_LARGE', 'WORKSPACE_FILE_UNSUPPORTED', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND'])
     sendJson(response, clientErrorCodes.has(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleWorkspaceCreate(request, response, options) {
+  try {
+    const body = await readJsonBody(request, 16 * 1024)
+    const workspace = await options.workspaceRegistry.createEmpty({ name: body.name })
+    sendJson(response, 201, { ok: true, workspace: options.workspaceRegistry.publicWorkspace(workspace) })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'WORKSPACE_CREATE_FAILED'), errorMessage: String(error?.message || error) })
   }
 }
 
@@ -543,20 +557,31 @@ async function handleAgentBootstrap(request, response, options) {
   try {
     const body = await readJsonBody(request, 64 * 1024)
     const workspaceInput = await resolveWorkspaceInput(body, options.workspaceRegistry)
-    const resumePath = workspaceInput.resumePath
+    let resumePath = workspaceInput.resumePath || 'resume.md'
     const templateId = String(body.templateId || 'campus-standard').trim()
     const workspace = workspaceInput
-    const source = await readWorkspaceText(workspace.root, resumePath)
+    let source
+    let initializedFromEmptyWorkspace = false
+    try {
+      source = await readWorkspaceText(workspace.root, resumePath)
+    } catch (error) {
+      if (error?.code !== 'WORKSPACE_FILE_NOT_FOUND' || body.createResume !== true) throw error
+      source = await createResumeSource(workspace.root, resumePath)
+      initializedFromEmptyWorkspace = true
+      const registered = await options.workspaceRegistry.setResumePath(workspace.id, resumePath)
+      Object.assign(workspace, registered)
+      resumePath = registered.resumePath
+    }
     const template = await loadWorkspaceTemplate(workspace.root, templateId)
     if (!template?.id) throw Object.assign(new Error(`template is not available in CVAgent: ${templateId}`), { code: 'TEMPLATE_NOT_FOUND' })
     const sessionId = `session_${crypto.randomUUID()}`
     const templateRevision = `${template.id}@${Number(template.metadata?.revision || 1)}`
-    session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, sessionId, sourceHash: contentHash(source.content) })
+    session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, intakeRequired: initializedFromEmptyWorkspace, sessionId, sourceHash: contentHash(source.content) })
     options.sessions.set(sessionId, session)
     const task = session.taskRef.current
     const runLogger = options.serverLogger.child(contextFields(task.context))
     const draft = await writeResumeDraft(workspace.root, task.context.taskId, resumePath, source.content)
-    session.taskRef.current = recordDraftWrite(session.taskRef.current, { workspaceId: workspace.id, resumeId: resumePath, contentVersion: draft.contentVersion })
+    session.taskRef.current = recordDraftWrite(session.taskRef.current, { workspaceId: workspace.id, resumeId: resumePath, contentVersion: draft.contentVersion, intakeComplete: !initializedFromEmptyWorkspace })
     session.taskRef.draftRelativePath = draft.draftRelativePath
     const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: workspace.root, resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
     const rendered = await handlers.resumeRender()
@@ -566,7 +591,7 @@ async function handleAgentBootstrap(request, response, options) {
     sendJson(response, 200, { ok: true, sessionId, workspace: options.workspaceRegistry.publicWorkspace(workspace), state: current.state, targetPages: current.targetPages, context: contextFields(current.context), presentation: session.taskRef.presentation || null, draft: { contentVersion: draft.contentVersion }, renderPath: session.taskRef.renderRelativePath || rendered.relativePath || null, source: { path: source.relativePath, content: source.content }, messages: sessionSummary.messages, workflowEvents: sessionSummary.workflowEvents })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_BOOTSTRAP_FAILED'), errorMessage: String(error?.message || error) }
-    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'TEMPLATE_NOT_FOUND'])
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_INVALID', 'WORKSPACE_RESUME_EXISTS', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'TEMPLATE_NOT_FOUND'])
     sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
   }
 }

@@ -100,11 +100,14 @@ function measurePreviewFrame(frame, identity = {}) {
         liveState.measuredRenderKey = key
         liveState.measurement = body.measurement || null
         liveState.workflowState = body.state || liveState.workflowState
-        liveState.blockerCount = body.verification?.blockers?.length || 0
+        const blockers = body.verification?.blockers || []
+        liveState.blockerCount = blockers.length
         updateHeader()
-        if (body.state === 'needs_revision' && liveState.continuationKey !== key) {
+        const requiresInitialIntake = blockers.includes('尚未完成首次信息收集')
+        if (requiresInitialIntake) showToast('请打开 Agent，补充基本信息后继续制作')
+        if (body.state === 'needs_revision' && !requiresInitialIntake && liveState.continuationKey !== key) {
           liveState.continuationKey = key
-          void continueAgentAfterMeasurement(key, body.verification?.blockers || [])
+          void continueAgentAfterMeasurement(key, blockers)
         }
       })
       .catch((error) => showToast(`预览测量失败：${errorText(error)}`))
@@ -268,11 +271,11 @@ function renderWorkspaceOptions(workspaces) {
     const name = document.createElement('span')
     name.textContent = workspace.name || '未命名工作区'
     const meta = document.createElement('small')
-    meta.textContent = `${workspace.resumeName || 'resume.md'} · ${workspace.fileCount || 0} 个文件`
+    meta.textContent = workspace.hasResume ? `${workspace.resumeName || 'resume.md'} · ${workspace.fileCount || 0} 个文件` : '空工作区 · 尚未创建简历'
     button.append(name, meta)
     button.addEventListener('click', () => {
       $('#workspaceMenu').hidden = true
-      void bootstrapWorkspace(workspace)
+      void selectWorkspace(workspace)
     })
     container.append(button)
   }
@@ -380,7 +383,12 @@ async function restoreSession(sessionId) {
   }
 }
 
-async function bootstrapWorkspace(workspace) {
+async function selectWorkspace(workspace) {
+  if (!workspace?.id) return
+  return bootstrapWorkspace(workspace, { createResume: !workspace.hasResume })
+}
+
+async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   if (!workspace?.id) return
   liveState.loading = true
   liveState.workspace = workspace
@@ -393,7 +401,7 @@ async function bootstrapWorkspace(workspace) {
   updateConnectionStatus()
   showToast('正在加载工作区…')
   try {
-    const { body } = await api.post('/api/agent/bootstrap', { workspaceId: workspace.id, targetPages: 1, templateId: liveState.templateId })
+    const { body } = await api.post('/api/agent/bootstrap', { workspaceId: workspace.id, targetPages: 1, templateId: liveState.templateId, createResume })
     liveState.workspace = body.workspace || workspace
     liveState.workspaceId = liveState.workspace.id
     liveState.sessionId = body.sessionId
@@ -460,6 +468,12 @@ async function importSelectedWorkspace(fileList) {
   await bootstrapWorkspace(body.workspace)
 }
 
+async function createEmptyWorkspace() {
+  const { body } = await api.post('/api/workspaces/create', { name: '我的第一份简历' })
+  renderWorkspaceOptions([body.workspace])
+  await bootstrapWorkspace(body.workspace, { createResume: true })
+}
+
 async function loadWorkspaces() {
   try {
     const { body } = await api.get('/api/workspaces')
@@ -469,7 +483,7 @@ async function loadWorkspaces() {
       const sessionsResponse = await api.get(`/api/sessions?workspaceId=${encodeURIComponent(workspaces[0].id)}`)
       const recentSession = Array.isArray(sessionsResponse.body.sessions) ? sessionsResponse.body.sessions[0] : null
       if (recentSession?.sessionId) await restoreSession(recentSession.sessionId)
-      else await bootstrapWorkspace(workspaces[0])
+      else await selectWorkspace(workspaces[0])
     }
   } catch (error) {
     renderWorkspaceOptions([])
@@ -520,7 +534,6 @@ function applyLayoutPrefs() {
   if (toggle) {
     toggle.setAttribute('aria-expanded', String(!layoutPrefs.collapsed))
     toggle.setAttribute('aria-label', layoutPrefs.collapsed ? '展开导航栏' : '收起导航栏')
-    toggle.querySelector('span').textContent = layoutPrefs.collapsed ? '›' : '‹'
     toggle.querySelector('small').textContent = layoutPrefs.collapsed ? '展开' : '收起'
   }
   const sidebarHandle = $('.resize-sidebar')
@@ -1139,7 +1152,10 @@ function renderRoute(route) {
   if (route === 'versions') { $('#routeActions').innerHTML = ''; void renderVersions() }
   updateHeader()
   const assistantButton = $('#workbenchAssistantButton')
-  if (assistantButton) assistantButton.addEventListener('click', () => setPreviewOpen(!previewOpen))
+  if (assistantButton) {
+    assistantButton.disabled = !liveState.sessionId
+    assistantButton.addEventListener('click', () => setPreviewOpen(!previewOpen))
+  }
   const saveButton = $('#saveVersionButton')
   if (saveButton) saveButton.addEventListener('click', () => { void saveCurrentVersion() })
   const recheckButton = $('#recheckButton')
@@ -1150,6 +1166,11 @@ $$('.nav-item').forEach((item) => item.addEventListener('click', () => renderRou
 $('#drawerClose').addEventListener('click', () => setPreviewOpen(false))
 $('#workspaceSwitcher').addEventListener('click', () => { const button = $('#workspaceSwitcher'); const menu = $('#workspaceMenu'); const open = button.getAttribute('aria-expanded') === 'true'; button.setAttribute('aria-expanded', String(!open)); menu.hidden = open })
 $('#workspaceImportButton').addEventListener('click', () => { $('#workspaceMenu').hidden = true; $('#workspaceSwitcher').setAttribute('aria-expanded', 'false'); $('#workspaceFiles').click() })
+$('#workspaceCreateButton').addEventListener('click', () => {
+  $('#workspaceMenu').hidden = true
+  $('#workspaceSwitcher').setAttribute('aria-expanded', 'false')
+  void createEmptyWorkspace().catch((error) => showToast(`创建工作区失败：${errorText(error)}`))
+})
 $('#workspaceFiles').addEventListener('change', (event) => {
   const files = event.target.files
   void importSelectedWorkspace(files).then(() => showToast('工作区导入完成')).catch((error) => showToast(`导入失败：${errorText(error)}`)).finally(() => { event.target.value = '' })
@@ -1159,7 +1180,12 @@ $('#newSession').addEventListener('click', () => {
     showToast('请先选择工作区')
     return
   }
-  void bootstrapWorkspace(liveState.workspace).then(() => showToast('已创建新的隔离会话')).catch((error) => showToast(`新建会话失败：${errorText(error)}`))
+  void bootstrapWorkspace(liveState.workspace, { createResume: !liveState.workspace.hasResume }).then(() => showToast('已创建新的隔离会话')).catch((error) => showToast(`新建会话失败：${errorText(error)}`))
+})
+window.addEventListener('cvagent:a4-pane-mounted', () => {
+  syncPreviewFrames()
+  bindPreviewFit()
+  updateHeader()
 })
 
 updateConnectionStatus()

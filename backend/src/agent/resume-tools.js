@@ -107,7 +107,7 @@ export function createResumeToolHandlers(options = {}) {
     async resumeDraftWrite(input) {
       return run('resume_write', async () => {
         const draft = await writeResumeDraft(options.workspaceRoot, taskRef.current.context.taskId, options.resumePath, input.content)
-        taskRef.current = recordDraftWrite(taskRef.current, { workspaceId: taskRef.current.context.workspaceId, resumeId: taskRef.current.context.resumeId, contentVersion: draft.contentVersion })
+        taskRef.current = recordDraftWrite(taskRef.current, { workspaceId: taskRef.current.context.workspaceId, resumeId: taskRef.current.context.resumeId, contentVersion: draft.contentVersion, intakeComplete: true })
         taskRef.draftRelativePath = draft.draftRelativePath
         return { draftPath: draft.draftRelativePath, contentVersion: draft.contentVersion, state: taskRef.current.state, sourcePreserved: true, nextAction: 'Render and measure this draft before proposing a formal save.' }
       }, {

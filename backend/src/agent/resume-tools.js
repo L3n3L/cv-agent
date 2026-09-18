@@ -1,7 +1,7 @@
 import { tool } from '@langchain/core/tools'
 import crypto from 'node:crypto'
 import { z } from 'zod'
-import { inspectSchema, listSchema, measureSchema, presentationSchema, qualitySchema, readMaterialSchema, templateCopySchema, templateSelectSchema, writeSchema } from './schemas.js'
+import { inspectSchema, listSchema, measureSchema, presentationSchema, qualitySchema, readMaterialSchema, templateCopySchema, templateGenerateSchema, templateRestoreSchema, templateSaveSchema, templateSelectSchema, templateVersionsSchema, writeSchema } from './schemas.js'
 import { contextFields } from '../core/context.js'
 import { contentHash } from '../core/content.js'
 import { WORKFLOW_EVENTS } from '../core/event-catalog.js'
@@ -9,9 +9,10 @@ import { recordDraftWrite, recordMeasurement, recordRender, recordTemplateChange
 import { listWorkspaceMaterials, readResumeDraft, readWorkspaceMaterial, readWorkspaceText, summarizeResume, writeResumeDraft } from '../core/workspace.js'
 import { renderResumeDraft } from '../core/render.js'
 import { runResumeTool } from '../core/tool-runner.js'
-import { copyWorkspaceTemplate, listWorkspaceTemplates, loadWorkspaceTemplate } from '../migrated/resume-engine/catalog.js'
+import { copyWorkspaceTemplate, listWorkspaceTemplateVersions, listWorkspaceTemplates, loadWorkspaceTemplate, restoreWorkspaceTemplateVersion, saveWorkspaceTemplate } from '../migrated/resume-engine/catalog.js'
 import { emptyPresentation, normalizePresentation, presentationWithOverride } from '../migrated/resume-engine/presentation.js'
 import { resumeQualityCheck } from '../migrated/resume-engine/quality.js'
+import { generateTemplateCandidate } from '../migrated/resume-engine/template-generation.js'
 
 export function createResumeToolHandlers(options = {}) {
   if (!options.workspaceRoot || !options.resumePath || !options.taskRef) throw new Error('workspaceRoot, resumePath and taskRef are required')
@@ -91,6 +92,30 @@ export function createResumeToolHandlers(options = {}) {
         const copied = await copyWorkspaceTemplate(options.workspaceRoot, input.sourceTemplateId, input.newTemplateId, input.name)
         return { templateId: copied.template.id, templateRevision: `${copied.template.id}@${copied.revision || 1}`, sourceTemplateId: copied.sourceTemplateId, path: copied.path, cssPath: copied.cssPath, createdAsCopy: true, nextAction: 'Select the copied template explicitly before rendering; the original template is unchanged.' }
       }, { resultSummary: (result) => ({ templateId: result.templateId, sourceTemplateId: result.sourceTemplateId, createdAsCopy: result.createdAsCopy }) })
+    },
+    async templateGenerate(input) {
+      return run('template_generate', async () => {
+        const candidate = generateTemplateCandidate(input.brief)
+        return { ...candidate, persisted: false, nextAction: candidate.valid ? 'Show the candidate to the user. Save it only after an explicit create or apply request.' : 'Correct the Design Brief or CSS validation errors before showing a candidate.' }
+      }, { resultSummary: (result) => ({ valid: result.valid, templateId: result.template?.id || null, qualityStatus: result.qualityAudit?.status || null }) })
+    },
+    async templateSave(input) {
+      return run('template_save', async () => {
+        const saved = await saveWorkspaceTemplate(options.workspaceRoot, input.template, { replaceExisting: input.replaceExisting })
+        return { templateId: saved.template.id, templateRevision: `${saved.template.id}@${saved.revision}`, revision: saved.revision, path: saved.path, cssPath: saved.cssPath, versionPath: saved.versionPath, persisted: true, nextAction: 'The workspace template is saved. Select it explicitly before rendering a resume with it.' }
+      }, { resultSummary: (result) => ({ templateId: result.templateId, revision: result.revision, persisted: result.persisted }) })
+    },
+    async templateVersions(input) {
+      return run('template_versions', async () => ({ templateId: input.templateId, versions: await listWorkspaceTemplateVersions(options.workspaceRoot, input.templateId) }), { resultSummary: (result) => ({ templateId: result.templateId, versionCount: result.versions.length }) })
+    },
+    async templateRestore(input) {
+      return run('template_restore', async () => {
+        const restored = await restoreWorkspaceTemplateVersion(options.workspaceRoot, input.templateId, input.versionId)
+        const templateRevision = `${restored.template.id}@${restored.revision}`
+        const selected = taskRef.current.context.templateId === restored.template.id
+        if (selected) taskRef.current = recordTemplateChange(taskRef.current, { workspaceId: taskRef.current.context.workspaceId, resumeId: taskRef.current.context.resumeId, templateId: restored.template.id, templateRevision })
+        return { templateId: restored.template.id, templateRevision, revision: restored.revision, versionPath: restored.versionPath, restoredFrom: input.versionId, selected, state: taskRef.current.state, nextAction: selected ? 'The selected template changed; render and measure again.' : 'The workspace template changed. Select it explicitly before rendering a resume with it.' }
+      }, { resultSummary: (result) => ({ templateId: result.templateId, revision: result.revision, restoredFrom: result.restoredFrom, selected: result.selected }) })
     },
     async presentationUpdate(input) {
       return run('presentation_update', async () => {
@@ -198,6 +223,10 @@ export function createResumeTools(options = {}) {
     tool(async () => handlers.templateList(), { name: 'template_list', description: 'List the migrated CVAgent templates. Use when the user asks what templates are available; do not silently replace a user-selected template.', schema: z.object({}) }),
     tool(async (input) => handlers.templateSelect(input), { name: 'template_select', description: 'Select an explicit template for the current task. This invalidates the previous render and requires a new render and measurement.', schema: templateSelectSchema }),
     tool(async (input) => handlers.templateCopy(input), { name: 'template_copy', description: 'Copy a built-in or workspace template into a new independent workspace template. The source is not overwritten and the copy must be selected explicitly.', schema: templateCopySchema }),
+    tool(async (input) => handlers.templateGenerate(input), { name: 'template_generate', description: 'Generate an in-memory, constrained template candidate from a Design Brief. It never writes a workspace file; inspect its validation and visual audit before proposing it to the user.', schema: templateGenerateSchema }),
+    tool(async (input) => handlers.templateSave(input), { name: 'template_save', description: 'Persist an approved candidate as a workspace template. Requires explicit user confirmation; existing templates require replaceExisting and create an immutable revision.', schema: templateSaveSchema }),
+    tool(async (input) => handlers.templateVersions(input), { name: 'template_versions', description: 'List immutable revisions for one workspace template. This is read-only.', schema: templateVersionsSchema }),
+    tool(async (input) => handlers.templateRestore(input), { name: 'template_restore', description: 'Restore an explicitly requested template revision as a new immutable revision. It never overwrites revision history.', schema: templateRestoreSchema }),
     tool(async (input) => handlers.presentationUpdate(input), { name: 'presentation_update', description: 'Adjust the selected template presentation: typography, spacing, colors, divider, or icon tuning. This invalidates the previous render; use before compressing content when layout can solve the issue.', schema: presentationSchema }),
     tool(async (input) => handlers.resumeDraftWrite(input), { name: 'resume_write', description: 'Write a new isolated draft under .cvagent/drafts. Never overwrite the source resume. Use for content iteration only; check, render, metrics, and finalize are still required.', schema: writeSchema }),
     tool(async () => handlers.resumeRender(), { name: 'resume_render', description: 'Render the current isolated draft into a new immutable preview artifact. Use after every draft or template change.', schema: z.object({}) }),

@@ -18,8 +18,9 @@ import { measureSchema, presentationSchema, qualitySchema, templateCopySchema, t
 import { archiveResumeVersion, createResumeSource, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
 import { createWorkspaceRegistry } from './core/workspace-registry.js'
 import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/workflow.js'
-import { copyWorkspaceTemplate, listWorkspaceTemplates, loadWorkspaceTemplate, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
+import { copyWorkspaceTemplate, getWorkspaceTemplateSnapshotIdentity, listWorkspaceTemplateVersions, listWorkspaceTemplates, loadWorkspaceTemplate, restoreWorkspaceTemplateVersion, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
 import { renderResumeDraft } from './core/render.js'
+import { generateTemplateCandidate } from './migrated/resume-engine/template-generation.js'
 
 const port = Number(process.env.CVAGENT_PORT || 3180)
 const logger = createLogger({ component: 'cvagent-server' })
@@ -224,6 +225,10 @@ export function createServer(options = {}) {
       void handleSession(request, response, { sessions, sessionStore, serverLogger: requestLogger, workspaceRegistry })
       return
     }
+    if (request.method === 'GET' && request.url?.startsWith('/api/templates/versions?')) {
+      void handleTemplateVersions(request, response, { workspaceRegistry })
+      return
+    }
     if (request.method === 'GET' && request.url?.startsWith('/api/templates')) {
       void handleTemplates(request, response, { workspaceRegistry })
       return
@@ -240,7 +245,11 @@ export function createServer(options = {}) {
       void handleAsset(request, response, { workspaceRegistry })
       return
     }
-    if (request.method === 'POST' && (request.url === '/api/templates/copy' || request.url === '/api/templates/save')) {
+    if (request.method === 'POST' && request.url === '/api/templates/generate') {
+      void handleTemplateGenerate(request, response)
+      return
+    }
+    if (request.method === 'POST' && (request.url === '/api/templates/copy' || request.url === '/api/templates/save' || request.url === '/api/templates/restore')) {
       void handleTemplateMutation(request, response, { action: request.url.split('/').at(-1), workspaceRegistry })
       return
     }
@@ -444,6 +453,29 @@ async function handleTemplates(request, response, options) {
   }
 }
 
+async function handleTemplateVersions(request, response, options) {
+  try {
+    const query = new URL(request.url, 'http://127.0.0.1')
+    const workspace = await resolveWorkspaceInput({ workspaceId: query.searchParams.get('workspaceId'), workspaceRoot: query.searchParams.get('workspaceRoot') }, options.workspaceRegistry)
+    const templateId = String(query.searchParams.get('templateId') || '').trim()
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(templateId)) throw Object.assign(new Error('templateId must be lower-kebab-case'), { code: 'TEMPLATE_INVALID' })
+    const versions = await listWorkspaceTemplateVersions(workspace.root, templateId)
+    sendJson(response, 200, { ok: true, workspaceId: workspace.id, templateId, versions })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'TEMPLATE_VERSIONS_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
+async function handleTemplateGenerate(request, response) {
+  try {
+    const body = await readJsonBody(request, 192 * 1024)
+    const candidate = generateTemplateCandidate(body.brief)
+    sendJson(response, candidate.valid ? 200 : 400, { ok: candidate.valid, candidate, persisted: false })
+  } catch (error) {
+    sendJson(response, 400, { ok: false, errorCode: String(error?.code || 'TEMPLATE_GENERATE_FAILED'), errorMessage: String(error?.message || error) })
+  }
+}
+
 async function handleTemplate(request, response, options) {
   try {
     const query = new URL(request.url, 'http://127.0.0.1')
@@ -524,14 +556,18 @@ async function handleTemplateMutation(request, response, options) {
     let result
     if (options.action === 'copy') {
       result = await copyWorkspaceTemplate(workspace.root, body.sourceTemplateId, body.newTemplateId, body.name)
+    } else if (options.action === 'restore') {
+      if (body.confirmedByUser !== true) throw Object.assign(new Error('template restore requires explicit user confirmation'), { code: 'TEMPLATE_CONFIRMATION_REQUIRED' })
+      result = await restoreWorkspaceTemplateVersion(workspace.root, body.templateId, body.versionId)
     } else {
       const template = typeof body.templateJson === 'string' ? JSON.parse(body.templateJson) : body.templateJson
+      if (body.confirmedByUser !== true) throw Object.assign(new Error('template save requires explicit user confirmation'), { code: 'TEMPLATE_CONFIRMATION_REQUIRED' })
       result = await saveWorkspaceTemplate(workspace.root, template, { replaceExisting: Boolean(body.replaceExisting), sourceTemplateId: body.sourceTemplateId })
     }
     sendJson(response, 200, { ok: true, workspaceId: workspace.id, result })
   } catch (error) {
     const code = String(error?.code || 'TEMPLATE_MUTATION_FAILED')
-    sendJson(response, ['TEMPLATE_CONFLICT', 'TEMPLATE_NOT_FOUND', 'WORKSPACE_INVALID'].includes(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
+    sendJson(response, ['TEMPLATE_CONFLICT', 'TEMPLATE_NOT_FOUND', 'TEMPLATE_INVALID', 'TEMPLATE_CONFIRMATION_REQUIRED', 'WORKSPACE_INVALID'].includes(code) ? 400 : 500, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })
   }
 }
 
@@ -807,7 +843,9 @@ async function handleSave(request, response, options) {
       const task = session.taskRef.current
       if (task.state !== 'accepted') throw Object.assign(new Error('resume verification has not passed'), { code: 'SAVE_NOT_ALLOWED' })
       const runLogger = options.serverLogger.child(contextFields(task.context))
-      const saved = await saveResumeVersion(session.workspaceRoot, task.context.taskId, session.resumePath, { ...contextFields(task.context), state: task.state, name: body.name, templateId: task.context.templateId, presentation: session.taskRef.presentation })
+      const templateRevision = Number(String(task.context.templateRevision || '').match(/@(\d+)/)?.[1] || 1)
+      const templateSnapshot = await getWorkspaceTemplateSnapshotIdentity(session.workspaceRoot, task.context.templateId, templateRevision)
+      const saved = await saveResumeVersion(session.workspaceRoot, task.context.taskId, session.resumePath, { ...contextFields(task.context), state: task.state, name: body.name, templateId: task.context.templateId, templateSnapshot, presentation: session.taskRef.presentation })
       session.taskRef.current = saveResumeTask(confirmResumeTask(task))
       session.status = session.taskRef.current.state
       session.runState = 'idle'

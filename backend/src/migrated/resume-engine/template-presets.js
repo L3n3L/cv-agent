@@ -177,18 +177,44 @@ function assertCustomTemplateId(id) {
   if (builtInTemplate(id)) throw new Error(`template id is reserved by a built-in preset: ${id}`)
 }
 
-function historyRoot(root, id) {
+function revisionRoot(root, id) {
+  return resolveWorkspacePath(root, `.cvagent/templates/${id}/revisions`).abs
+}
+
+function revisionRelativePath(id, revision) {
+  return `.cvagent/templates/${id}/revisions/${String(revision).padStart(4, '0')}`
+}
+
+function legacyHistoryRoot(root, id) {
   return resolveWorkspacePath(root, `.cvagent/legacy/template-history/${id}`).abs
 }
 
-async function recordTemplateVersion(root, current, templateCss = '') {
-  if (!current) return null
-  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
-  const dir = historyRoot(root, current.id)
-  await fs.mkdir(dir, { recursive: true })
-  const rel = `.cvagent/legacy/template-history/${current.id}/${stamp}.json`
-  await writeWorkspaceFile(root, rel, `${JSON.stringify({ ...current, templateCss }, null, 2)}\n`)
-  return rel
+async function listRevisionDirectories(root, id) {
+  try {
+    return (await fs.readdir(revisionRoot(root, id), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && /^\d{4,}$/.test(entry.name))
+      .sort((left, right) => right.name.localeCompare(left.name, undefined, { numeric: true }))
+  } catch {
+    return []
+  }
+}
+
+async function recordTemplateRevision(root, template, templateCss) {
+  const revision = Math.max(1, Number(template.metadata?.revision) || 1)
+  const base = revisionRelativePath(template.id, revision)
+  await fs.mkdir(revisionRoot(root, template.id), { recursive: true })
+  const { templateCss: _templateCss, ...persisted } = template
+  await writeWorkspaceFile(root, `${base}/template.json`, `${JSON.stringify(persisted, null, 2)}\n`)
+  if (templateCss) await writeWorkspaceFile(root, `${base}/template.css`, templateCss)
+  return `${base}/template.json`
+}
+
+async function readTemplateRevision(root, id, revisionId) {
+  const base = `.cvagent/templates/${id}/revisions/${revisionId}`
+  const snapshot = JSON.parse(await fs.readFile(resolveWorkspacePath(root, `${base}/template.json`).abs, 'utf8'))
+  let templateCss = ''
+  try { templateCss = await fs.readFile(resolveWorkspacePath(root, `${base}/template.css`).abs, 'utf8') } catch (error) { if (error?.code !== 'ENOENT') throw error }
+  return { ...snapshot, templateCss }
 }
 
 async function readOptionalTemplateCss(root, id) {
@@ -208,6 +234,22 @@ async function readOptionalTemplateCss(root, id) {
 
 export async function loadTemplateCss(root, id) {
   return readOptionalTemplateCss(root, id)
+}
+
+export async function templateSnapshotIdentity(root, id, revision) {
+  const template = await loadTemplate(root, id)
+  const templateCss = await readOptionalTemplateCss(root, id)
+  const numericRevision = Math.max(1, Number(revision) || Number(template.metadata?.revision) || 1)
+  const { templateCss: _templateCss, ...persisted } = template
+  const fingerprint = createHash('sha256').update(`${JSON.stringify(persisted)}\n${templateCss}`).digest('hex').slice(0, 16)
+  const immutable = Boolean(template.metadata?.immutable)
+  return {
+    templateId: template.id,
+    revision: numericRevision,
+    snapshotPath: immutable ? null : `${revisionRelativePath(template.id, numericRevision)}/template.json`,
+    fingerprint,
+    immutable,
+  }
 }
 
 function cssMetadata(css) {
@@ -292,6 +334,17 @@ export async function saveTemplate(root, input, { replaceExisting = false, sourc
     : cssBeforeScopeRewrite
   const cssValidation = validateCssText(nextCss, { kind: 'templateCss' })
   if (!cssValidation.valid) throw new Error(cssValidation.errors.join('; '))
+  const existingRevisions = await listRevisionDirectories(root, result.value.id)
+  // Flat workspace templates created before the revision store are preserved
+  // once before their first replacement. Legacy history stays read-only.
+  if (previous && !existingRevisions.length) {
+    const previousRevision = Math.max(1, Number(previous.metadata?.revision) || 1)
+    const preserved = {
+      ...previous,
+      metadata: templateMetadata(previous, { revision: previousRevision, immutable: false }),
+    }
+    await recordTemplateRevision(root, preserved, previousCss)
+  }
   const nextRevision = previous
     ? Math.max(1, Number(previous.metadata?.revision) || 1) + 1
     : Math.max(1, Number(result.value.metadata?.revision) || 1)
@@ -302,7 +355,6 @@ export async function saveTemplate(root, input, { replaceExisting = false, sourc
   })
   metadata.updatedAt = new Date().toISOString()
   const nextTemplate = { ...result.value, metadata }
-  const versionPath = await recordTemplateVersion(root, previous, previousCss)
   const { templateCss: _templateCss, ...persisted } = nextTemplate
   await writeWorkspaceFile(root, rel, `${JSON.stringify(persisted, null, 2)}\n`)
   if (nextCss) {
@@ -311,6 +363,7 @@ export async function saveTemplate(root, input, { replaceExisting = false, sourc
     try { await fs.unlink(cssAbs) } catch (err) { if (err?.code !== 'ENOENT') throw err }
   }
   const template = { ...clone(persisted), templateCss: nextCss }
+  const versionPath = await recordTemplateRevision(root, template, nextCss)
   return { path: rel, cssPath: nextCss ? `templates/${result.value.id}.css` : null, template, versionPath, revision: nextRevision, bytes: Buffer.byteLength(JSON.stringify(persisted, null, 2) + '\n', 'utf8'), cssBytes: Buffer.byteLength(nextCss, 'utf8') }
 }
 
@@ -328,26 +381,34 @@ export async function copyTemplate(root, sourceId, newId, name) {
 }
 
 export async function listTemplateVersions(root, id) {
-  const dir = historyRoot(root, id)
-  let entries = []
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
-  } catch {
-    return []
+  const revisions = await listRevisionDirectories(root, id)
+  if (revisions.length) {
+    return Promise.all(revisions.map(async (entry) => {
+      const pathValue = `${revisionRelativePath(id, entry.name)}/template.json`
+      try {
+        const snapshot = await readTemplateRevision(root, id, entry.name)
+        return { id: entry.name, path: pathValue, name: snapshot.name || id, revision: snapshot.metadata?.revision || Number(entry.name), createdAt: snapshot.metadata?.updatedAt || null, source: 'revision' }
+      } catch {
+        return { id: entry.name, path: pathValue, name: id, revision: Number(entry.name), createdAt: null, source: 'revision' }
+      }
+    }))
   }
-  const versions = await Promise.all(entries
+
+  // Migration compatibility only: do not append to this pre-CVAgent history.
+  let entries = []
+  try { entries = await fs.readdir(legacyHistoryRoot(root, id), { withFileTypes: true }) } catch { return [] }
+  return Promise.all(entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
     .sort((a, b) => b.name.localeCompare(a.name))
     .map(async (entry) => {
       const pathValue = `.cvagent/legacy/template-history/${id}/${entry.name}`
       try {
         const snapshot = JSON.parse(await fs.readFile(resolveWorkspacePath(root, pathValue).abs, 'utf8'))
-        return { id: entry.name.slice(0, -5), path: pathValue, name: snapshot.name || id, revision: snapshot.metadata?.revision || null, createdAt: snapshot.metadata?.updatedAt || null }
+        return { id: entry.name.slice(0, -5), path: pathValue, name: snapshot.name || id, revision: snapshot.metadata?.revision || null, createdAt: snapshot.metadata?.updatedAt || null, source: 'legacy' }
       } catch {
-        return { id: entry.name.slice(0, -5), path: pathValue, name: id, revision: null, createdAt: null }
+        return { id: entry.name.slice(0, -5), path: pathValue, name: id, revision: null, createdAt: null, source: 'legacy' }
       }
     }))
-  return versions
 }
 
 export async function restoreLatestTemplate(root, id) {
@@ -361,7 +422,8 @@ export async function restoreTemplateVersion(root, id, versionId) {
   const versions = await listTemplateVersions(root, id)
   const version = versions.find((item) => item.id === versionId)
   if (!version) throw new Error(`template version not found: ${id}/${versionId}`)
-  const { abs } = resolveWorkspacePath(root, version.path)
-  const snapshot = JSON.parse(await fs.readFile(abs, 'utf8'))
+  const snapshot = version.source === 'revision'
+    ? await readTemplateRevision(root, id, versionId)
+    : JSON.parse(await fs.readFile(resolveWorkspacePath(root, version.path).abs, 'utf8'))
   return saveTemplate(root, snapshot, { replaceExisting: true, sourceTemplateId: snapshot.metadata?.sourceTemplateId })
 }

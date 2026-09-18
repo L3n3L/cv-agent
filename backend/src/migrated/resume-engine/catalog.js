@@ -1,4 +1,4 @@
-import { listAvailableTemplates, listTemplatePresets, getTemplatePreset, loadTemplate, copyTemplate, saveTemplate } from './template-presets.js'
+import { listAvailableTemplates, listTemplatePresets, getTemplatePreset, loadTemplate, copyTemplate, saveTemplate, listTemplateVersions, restoreTemplateVersion, templateSnapshotIdentity } from './template-presets.js'
 
 export function listMigratedTemplates() {
   return listTemplatePresets().map((template) => ({
@@ -42,4 +42,16 @@ export async function saveWorkspaceTemplate(root, template, options = {}) {
 
 export async function copyWorkspaceTemplate(root, sourceId, newId, name) {
   return copyTemplate(root, sourceId, newId, name)
+}
+
+export async function listWorkspaceTemplateVersions(root, id) {
+  return listTemplateVersions(root, id)
+}
+
+export async function restoreWorkspaceTemplateVersion(root, id, versionId) {
+  return restoreTemplateVersion(root, id, versionId)
+}
+
+export async function getWorkspaceTemplateSnapshotIdentity(root, id, revision) {
+  return templateSnapshotIdentity(root, id, revision)
 }

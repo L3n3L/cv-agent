@@ -9,9 +9,15 @@ test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height pee
   const html = await fs.readFile(path.join(frontendRoot, 'index.html'), 'utf8')
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
   assert.match(html, /<section class="route-view" id="routeView"[\s\S]*?<div class="route-content" id="routeContent"><\/div><\/section>[\s\S]*?<\/main>[\s\S]*?class="resize-handle resize-assistant"[\s\S]*?id="assistantDrawer"/)
-  assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\) 8px var\(--assistant-width\); \}/)
+  assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 1px minmax\(0,1fr\) 1px var\(--assistant-width\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:5; grid-row:1; width:auto; height:100%;/)
   assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ grid-column:4; grid-row:1; display:block; \}/)
+  assert.match(css, /\.app-shell \{ border:1px solid #e2e5e9; border-radius:10px;/)
+  assert.match(css, /\.editor-pane \{ border-right:1px solid var\(--workbench-seam\); background:#fff; \}/)
+  assert.match(css, /\.editor-foot \{ padding-top:12px; border-top:1px solid var\(--workbench-weak\); \}/)
+  assert.match(css, /\.resize-handle \{[\s\S]*?width:1px; min-width:1px;/)
+  assert.match(css, /\.resize-handle::before \{[\s\S]*?left:0; width:1px;[\s\S]*?opacity:1;/)
+  assert.match(css, /\.resize-handle::after \{[\s\S]*?left:-4px; width:9px;/)
   assert.match(css, /\.assistant-drawer \.drawer-header \{[\s\S]*?display:flex;[\s\S]*?border-bottom:1px solid #e8eaed;/)
   assert.match(css, /\.assistant-drawer \.assistant-context \{ display:none; \}/)
   assert.match(css, /\.assistant-drawer #assistantContent \{ height:calc\(100% - 51px\); \}/)
@@ -26,11 +32,11 @@ test('frontend moves the full-height Agent below the workbench on narrow screens
 
 test('frontend keeps three columns for desktop-sized 961-1100px viewports', async () => {
   const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
-  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?grid-template-columns:var\(--sidebar-width\) 8px minmax\(0,1fr\) 8px minmax\(280px,min\(var\(--assistant-width\),32vw\)\);/)
-  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 8px minmax\(0,1fr\); \}/)
+  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?grid-template-columns:var\(--sidebar-width\) 1px minmax\(0,1fr\) 1px minmax\(280px,min\(var\(--assistant-width\),32vw\)\);/)
+  assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 1px minmax\(0,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-pane \{ grid-column:auto; grid-row:auto; \}/)
-  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ grid-template-columns:minmax\(0,1fr\) 8px minmax\(0,1fr\); \}/)
-  assert.match(css, /\.app-shell\.assistant-open \.workbench-split \{ width:100%; height:calc\(100dvh - 122px\); grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 8px minmax\(0,1fr\); \}/)
+  assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ grid-template-columns:minmax\(0,1fr\) 1px minmax\(0,1fr\); \}/)
+  assert.match(css, /\.app-shell\.assistant-open \.workbench-split \{ width:100%; height:calc\(100dvh - 122px\); grid-template-columns:minmax\(0,var\(--editor-width,1fr\)\) 1px minmax\(0,1fr\); \}/)
 })
 
 test('frontend keeps the measured A4 fit when Agent is open on desktop widths', async () => {

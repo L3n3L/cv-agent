@@ -168,6 +168,8 @@ export function presentationWithOverride(presentation, {
   iconTuning = {},
   activePreviewPath,
   resumePath,
+  reset = false,
+  clear = [],
 } = {}) {
   const current = normalizePresentation(presentation)
   if (TEMPLATE_ID.test(String(templateId || ''))) {
@@ -176,12 +178,23 @@ export function presentationWithOverride(presentation, {
     const targetOverrides = scopedResumePath
       ? (current.resumeOverrides[scopedResumePath] ||= {})
       : current.overrides
-    const previous = targetOverrides[templateId] || {}
-    targetOverrides[templateId] = {
-      layout: cleanLayout(layout),
-      visual: cleanVisual(visual),
-      iconTuning: cleanIconTuning(iconTuning),
-      updatedAt: previous.updatedAt,
+    if (reset) {
+      delete targetOverrides[templateId]
+      if (scopedResumePath && !Object.keys(targetOverrides).length) delete current.resumeOverrides[scopedResumePath]
+    } else {
+      const previous = targetOverrides[templateId] || {}
+      const next = {
+        layout: { ...(previous.layout || {}), ...cleanLayout(layout) },
+        visual: { ...(previous.visual || {}), ...cleanVisual(visual) },
+        iconTuning: { ...(previous.iconTuning || {}), ...cleanIconTuning(iconTuning) },
+        updatedAt: new Date().toISOString(),
+      }
+      for (const field of Array.isArray(clear) ? clear : []) {
+        if (field === 'layout' || field === 'visual' || field === 'iconTuning') delete next[field]
+      }
+      if (Object.keys(next).some((key) => key !== 'updatedAt' && Object.keys(next[key] || {}).length)) targetOverrides[templateId] = next
+      else delete targetOverrides[templateId]
+      if (scopedResumePath && !Object.keys(targetOverrides).length) delete current.resumeOverrides[scopedResumePath]
     }
   }
   if (activePreviewPath !== undefined) current.activePreviewPath = cleanRelativePath(activePreviewPath)

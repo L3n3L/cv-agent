@@ -23,6 +23,8 @@ export const versionSaveSchema = z.object({
   jobDescriptionPath: z.string().max(240).optional(),
 })
 export const presentationSchema = z.object({
+  reset: z.boolean().default(false).describe('Remove the selected template presentation override for the current isolated resume. This does not modify the template or resume content.'),
+  clear: z.array(z.enum(['layout', 'visual', 'iconTuning'])).default([]).describe('Remove only the named presentation groups so the template defaults apply again.'),
   layout: z.object({ fontFamily: z.enum(['system-sans', 'modern-sans', 'serif']).optional(), fontSize: z.number().min(11).max(18).optional(), lineHeight: z.number().min(1.2).max(2).optional(), sectionGap: z.number().min(6).max(30).optional(), pageMargin: z.number().min(24).max(72).optional() }).default({}),
   visual: z.object({ accentColor: z.string().regex(/^#[0-9a-f]{6}$/i).optional(), textColor: z.string().regex(/^#[0-9a-f]{6}$/i).optional(), mutedColor: z.string().regex(/^#[0-9a-f]{6}$/i).optional(), backgroundColor: z.string().regex(/^#[0-9a-f]{6}$/i).optional(), cornerRadius: z.number().min(0).max(16).optional(), divider: z.enum(['none', 'solid', 'dashed']).optional() }).default({}),
   iconTuning: z.record(z.string(), z.object({ scale: z.number().min(0.7).max(1.5).optional(), offsetY: z.number().min(-0.25).max(0.25).optional() })).default({}),

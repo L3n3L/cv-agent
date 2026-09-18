@@ -33,6 +33,9 @@ const liveState = {
   agentRunActive: false,
   agentRunError: '',
   loading: false,
+  templatePanel: null,
+  templateCandidate: null,
+  presentationDraft: null,
 }
 const api = window.cvAgentApi
 let measurementInFlightKey = ''
@@ -687,9 +690,12 @@ function updateHeader() {
   }
   const saveButton = $('#saveVersionButton, #createVersionButton')
   if (saveButton) {
-    const canSave = liveState.workflowState === 'accepted'
+    const hasPresentationDraft = Boolean(liveState.presentationDraft)
+    const canSave = liveState.workflowState === 'accepted' && !hasPresentationDraft
     saveButton.disabled = !canSave
-    saveButton.title = canSave ? '保存当前已通过真实 A4 验收的正式版本' : '真实 A4 验收通过后才能保存正式版本'
+    saveButton.title = hasPresentationDraft
+      ? '请先将手动微调应用到当前草稿并完成真实 A4 测量'
+      : canSave ? '保存当前已通过真实 A4 验收的正式版本' : '真实 A4 验收通过后才能保存正式版本'
   }
   updatePreviewStatus()
 }
@@ -790,17 +796,13 @@ async function applyPresentationTuning(valuesOverride = null) {
     showToast('请先选择工作区并加载简历')
     return
   }
-  const values = valuesOverride || {
-    fontSize: Number($('#tuningFontSize')?.value || 13),
-    lineHeight: Number($('#tuningLineHeight')?.value || 1.5),
-    sectionGap: Number($('#tuningSectionGap')?.value || 16),
-    pageMargin: Number($('#tuningPageMargin')?.value || 38),
-  }
+  const values = valuesOverride || { layout: { fontSize: 13, lineHeight: 1.5, sectionGap: 16, pageMargin: 38 }, visual: {}, iconTuning: {} }
   const button = $('#applyTuning')
   if (button) button.disabled = true
   try {
-    const response = await api.post('/api/agent/presentation', { sessionId: liveState.sessionId, layout: values })
+    const response = await api.post('/api/agent/presentation', { sessionId: liveState.sessionId, ...values })
     liveState.presentation = response.body.result?.presentation || liveState.presentation
+    liveState.presentationDraft = null
     const rendered = await api.post('/api/agent/render', { sessionId: liveState.sessionId })
     liveState.renderId = rendered.body.context?.renderId || liveState.renderId
     liveState.workflowState = rendered.body.state || response.body.state || 'rendered'
@@ -834,7 +836,9 @@ function renderWorkbench() {
   if (previewMount && window.CVAgentReact?.mountA4Pane) {
     window.CVAgentReact.mountA4Pane(previewMount, {
       templateName: liveState.templateName || liveState.templateId,
-      layout: liveState.presentation?.layout || {},
+      presentation: currentPresentationOverride(),
+      templateLayout: liveState.templates.find((item) => item.id === liveState.templateId)?.presentationDefaults?.layout || {},
+      onDraftChange: stagePresentationDraft,
       onApplyTuning: (values) => applyPresentationTuning(values),
       onOpenFullPreview: () => renderRoute('preview'),
     })
@@ -848,10 +852,41 @@ function renderWorkbench() {
   renderAgentChat()
 }
 
+function stagePresentationDraft(values) {
+  liveState.presentationDraft = {
+    ...values,
+    clear: Array.isArray(values?.clear) ? values.clear : [],
+    resumePath: liveState.resumePath,
+    templateId: liveState.templateId,
+  }
+  updateHeader()
+}
+
+function currentPresentationOverride() {
+  const presentation = liveState.presentation || {}
+  const resumeOverrides = presentation.resumeOverrides || {}
+  const override = resumeOverrides[liveState.resumePath]?.[liveState.templateId] || presentation.overrides?.[liveState.templateId] || {}
+  const template = liveState.templates.find((item) => item.id === liveState.templateId)
+  const draft = liveState.presentationDraft?.resumePath === liveState.resumePath && liveState.presentationDraft?.templateId === liveState.templateId
+    ? liveState.presentationDraft
+    : null
+  const cleared = new Set(draft?.clear || [])
+  return {
+    layout: { ...(template?.presentationDefaults?.layout || {}), ...(cleared.has('layout') ? {} : override.layout || {}), ...(draft?.layout || {}) },
+    iconTuning: { ...(cleared.has('iconTuning') ? {} : override.iconTuning || {}), ...(draft?.iconTuning || {}) },
+  }
+}
+
 function renderPreview() {
   $('#routeContent').innerHTML = `<div class="preview-page"><div class="page-toolbar preview-actions"><button class="secondary-button" type="button">上一页</button><button class="secondary-button" type="button">下一页</button><select aria-label="预览缩放"><option>100%</option><option>80%</option><option>120%</option></select></div><div class="full-preview-canvas"><div class="full-real-frame-wrap"><iframe class="full-real-frame" title="当前简历完整 A4 预览" src="about:blank"></iframe></div></div><div class="preview-foot"><span><i></i> <span data-full-preview-status>等待渲染</span></span><button class="primary-small" type="button">重新渲染</button></div></div>`
   syncPreviewFrames()
   bindPreviewFit()
+}
+
+function templateOrigin(template) {
+  if (template.immutable) return '内置模板'
+  if (template.sourceTemplateId) return `派生自 ${template.sourceTemplateId}`
+  return '我的模板'
 }
 
 function templateCard(template) {
@@ -862,7 +897,31 @@ function templateCard(template) {
   const thumb = activeSessionId
     ? `<iframe class="template-real-thumb" data-template-id="${id}" title="${name}真实模板缩略图" loading="lazy"></iframe>`
     : '<div class="template-thumb-empty">选择工作区后显示真实模板</div>'
-  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}模板预览">${thumb}</div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><small>${escapeHtml(template.id)} · 修订 ${Number(template.revision || 1)}</small><div class="tag-row">${tags.map((tag) => `<i>${escapeHtml(tag)}</i>`).join('')}</div><p class="template-description">${escapeHtml(template.description || '可用于当前简历的独立模板。')}</p><button class="secondary-button template-select" data-template="${id}" type="button" ${selected ? 'disabled' : ''}>${selected ? '当前使用' : '选择模板'}</button></div></article>`
+  const origin = escapeHtml(templateOrigin(template))
+  return `<article class="template-card ${selected ? 'selected' : ''}" data-template="${id}"><div class="template-thumb" aria-label="${name}模板预览">${thumb}</div><div class="template-info"><div class="template-name"><b>${name}</b><span>${selected ? '当前使用' : '可选择'}</span></div><div class="template-meta"><span>${template.immutable ? '内置' : '我的'}</span><span>v${Number(template.revision || 1)}</span><span title="${origin}">${origin}</span></div><div class="tag-row">${tags.map((tag) => `<i>${escapeHtml(tag)}</i>`).join('')}</div><p class="template-description">${escapeHtml(template.description || '可用于当前简历的独立模板。')}</p><div class="template-card-actions"><button class="secondary-button template-select" data-template="${id}" type="button" ${selected ? 'disabled' : ''}>${selected ? '当前使用' : '选择模板'}</button><button class="text-button template-copy" data-template="${id}" type="button">复制</button>${template.immutable ? '' : `<button class="text-button template-history" data-template="${id}" type="button">历史</button>`}</div></div></article>`
+}
+
+function templatePanel() {
+  const panel = liveState.templatePanel
+  if (!panel) return ''
+  if (panel.kind === 'copy') {
+    const source = liveState.templates.find((template) => template.id === panel.templateId)
+    if (!source) return ''
+    const suggestedId = `${source.id}-copy`.slice(0, 63)
+    return `<section class="template-workflow-panel" aria-label="复制模板"><div class="template-panel-head"><b>复制模板</b><button class="text-button" type="button" data-template-panel-close>关闭</button></div><p>将「${escapeHtml(source.name || source.id)}」复制到当前工作区；原模板不会改变。</p><form id="templateCopyForm" class="template-form"><label>模板 ID<input name="id" value="${escapeHtml(suggestedId)}" pattern="[a-z0-9][a-z0-9-]{0,63}" required /></label><label>显示名称<input name="name" value="${escapeHtml(`${source.name || source.id} 副本`)}" maxlength="80" required /></label><div class="template-form-actions"><button class="primary-small" type="submit">创建副本</button></div></form></section>`
+  }
+  if (panel.kind === 'history') {
+    const versions = Array.isArray(panel.versions) ? panel.versions : []
+    return `<section class="template-workflow-panel" aria-label="模板历史"><div class="template-panel-head"><b>模板历史</b><button class="text-button" type="button" data-template-panel-close>关闭</button></div><p>${escapeHtml(panel.templateId)} 的每次恢复都会创建一个新修订，历史不会被覆盖。</p><div class="template-version-list">${versions.length ? versions.map((version) => `<div class="template-version-row"><div><b>v${Number(version.revision || version.id)}</b><small>${escapeHtml(version.createdAt ? new Date(version.createdAt).toLocaleString() : version.id)}</small></div><button class="text-button template-restore" data-template="${escapeHtml(panel.templateId)}" data-version="${escapeHtml(version.id)}" type="button">恢复为新修订</button></div>`).join('') : '<span class="template-empty">这个模板尚无历史修订。</span>'}</div></section>`
+  }
+  const candidate = liveState.templateCandidate
+  const brief = candidate?.brief || {}
+  const selected = (key, value, fallback) => (brief[key] || fallback) === value ? ' selected' : ''
+  return `<section class="template-workflow-panel" aria-label="新建模板"><div class="template-panel-head"><b>新建模板</b><button class="text-button" type="button" data-template-panel-close>关闭</button></div><p>先生成受控候选，再明确保存。候选不会写入工作区。</p><form id="templateBriefForm" class="template-form template-brief-form"><label>名称<input name="name" value="${escapeHtml(brief.name || '')}" maxlength="40" placeholder="例如：产品实习高密度" required /></label><label>模板 ID<input name="id" value="${escapeHtml(brief.id || '')}" pattern="[a-z0-9][a-z0-9-]{0,63}" placeholder="product-dense" /></label><label>目标场景<select name="audience"><option value="general"${selected('audience', 'general', 'general')}>通用</option><option value="campus"${selected('audience', 'campus', 'general')}>校招</option><option value="engineering"${selected('audience', 'engineering', 'general')}>工程</option><option value="product"${selected('audience', 'product', 'general')}>产品</option><option value="design"${selected('audience', 'design', 'general')}>设计</option><option value="academic"${selected('audience', 'academic', 'general')}>学术</option></select></label><label>结构<select name="layout"><option value="single-column"${selected('layout', 'single-column', 'single-column')}>单栏</option><option value="two-column"${selected('layout', 'two-column', 'single-column')}>双栏</option></select></label><label>密度<select name="density"><option value="compact"${selected('density', 'compact', 'standard')}>紧凑</option><option value="standard"${selected('density', 'standard', 'standard')}>标准</option><option value="airy"${selected('density', 'airy', 'standard')}>舒展</option></select></label><label>视觉方向<select name="family"><option value="campus-clear"${selected('family', 'campus-clear', 'campus-clear')}>校招清晰</option><option value="engineering-dense"${selected('family', 'engineering-dense', 'campus-clear')}>工程密集</option><option value="split-focus"${selected('family', 'split-focus', 'campus-clear')}>双栏侧重</option><option value="editorial-quiet"${selected('family', 'editorial-quiet', 'campus-clear')}>安静编辑</option><option value="portfolio-grid"${selected('family', 'portfolio-grid', 'campus-clear')}>项目作品集</option><option value="business-timeline"${selected('family', 'business-timeline', 'campus-clear')}>商务时间线</option><option value="magazine-editorial"${selected('family', 'magazine-editorial', 'campus-clear')}>杂志开篇</option><option value="geek-lab"${selected('family', 'geek-lab', 'campus-clear')}>极客实验室</option></select></label><label class="template-form-wide">说明<textarea name="description" maxlength="160" placeholder="要突出什么，适合什么投递场景">${escapeHtml(brief.description || '')}</textarea></label><div class="template-form-actions"><button class="primary-small" type="submit">生成候选</button></div></form>${candidate ? `<div class="template-candidate"><div><b>${escapeHtml(candidate.template?.name || brief.name || '模板候选')}</b><span>尚未保存</span></div><p>${escapeHtml(candidate.template?.description || '')}</p><small>质量审计：${escapeHtml(candidate.qualityAudit?.status || 'unknown')} · ${Number(candidate.qualityAudit?.score || 0)}/${Number(candidate.qualityAudit?.total || 0)}</small><div class="template-form-actions"><button class="primary-small" type="button" data-template-candidate-save>保存为我的模板</button></div></div>` : ''}</section>`
+}
+
+function templateRouteMarkup() {
+  return `<div class="templates-page"><div class="templates-toolbar"><div><b>模板库</b><span>选择只作用于当前简历；模板资产独立保存。</span></div><button class="secondary-button" type="button" data-template-create>新建模板</button></div>${templatePanel()}<div class="template-grid">${liveState.templates.map(templateCard).join('')}</div></div>`
 }
 
 function updateTemplateCards() {
@@ -926,12 +985,80 @@ async function renderTemplates() {
     liveState.templates = Array.isArray(body.templates) ? body.templates : []
     const selected = liveState.templates.find((item) => item.id === liveState.templateId)
     if (selected) liveState.templateName = selected.name || selected.id
-    view.innerHTML = `<div class="templates-page"><div class="template-grid">${liveState.templates.map(templateCard).join('')}</div></div>`
+    view.innerHTML = templateRouteMarkup()
     viewport.scrollTop = 0
     syncTemplatePreviewFrames()
     $$('.template-select').forEach((button) => button.addEventListener('click', () => {
       const template = liveState.templates.find((item) => item.id === button.dataset.template)
       void applyTemplate(template, button)
+    }))
+    $$('[data-template-create]').forEach((button) => button.addEventListener('click', () => {
+      liveState.templateCandidate = null
+      liveState.templatePanel = { kind: 'create' }
+      void renderTemplates()
+    }))
+    $$('[data-template-panel-close]').forEach((button) => button.addEventListener('click', () => {
+      liveState.templatePanel = null
+      void renderTemplates()
+    }))
+    $$('.template-copy').forEach((button) => button.addEventListener('click', () => {
+      liveState.templatePanel = { kind: 'copy', templateId: button.dataset.template }
+      void renderTemplates()
+    }))
+    $$('.template-history').forEach((button) => button.addEventListener('click', async () => {
+      const templateId = button.dataset.template
+      if (!templateId) return
+      try {
+        const { body } = await api.get(`/api/templates/versions?workspaceId=${encodeURIComponent(liveState.workspaceId)}&templateId=${encodeURIComponent(templateId)}`)
+        liveState.templatePanel = { kind: 'history', templateId, versions: body.versions || [] }
+        await renderTemplates()
+      } catch (error) { showToast(`读取模板历史失败：${errorText(error)}`) }
+    }))
+    const copyForm = $('#templateCopyForm')
+    copyForm?.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const form = new FormData(copyForm)
+      const sourceTemplateId = liveState.templatePanel?.templateId
+      try {
+        await api.post('/api/templates/copy', { workspaceId: liveState.workspaceId, sourceTemplateId, newTemplateId: String(form.get('id') || ''), name: String(form.get('name') || '') })
+        liveState.templatePanel = null
+        await refreshWorkspaceTemplates({ rerender: true })
+        showToast('已创建模板副本；请显式选择后再渲染。')
+      } catch (error) { showToast(`复制模板失败：${errorText(error)}`) }
+    })
+    const briefForm = $('#templateBriefForm')
+    briefForm?.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const form = new FormData(briefForm)
+      const brief = Object.fromEntries([...form.entries()].map(([key, value]) => [key, String(value).trim()]))
+      try {
+        const { body } = await api.post('/api/templates/generate', { brief })
+        liveState.templateCandidate = body.candidate
+        liveState.templatePanel = { kind: 'create' }
+        await renderTemplates()
+      } catch (error) { showToast(`生成模板候选失败：${errorText(error)}`) }
+    })
+    $$('[data-template-candidate-save]').forEach((button) => button.addEventListener('click', async () => {
+      const template = liveState.templateCandidate?.template
+      if (!template) return
+      try {
+        await api.post('/api/templates/save', { workspaceId: liveState.workspaceId, templateJson: template, confirmedByUser: true })
+        liveState.templateCandidate = null
+        liveState.templatePanel = null
+        await refreshWorkspaceTemplates({ rerender: true })
+        showToast('已保存模板；请显式选择后再渲染。')
+      } catch (error) { showToast(`保存模板失败：${errorText(error)}`) }
+    }))
+    $$('.template-restore').forEach((button) => button.addEventListener('click', async () => {
+      const templateId = button.dataset.template
+      const versionId = button.dataset.version
+      if (!templateId || !versionId || !window.confirm(`恢复 ${templateId} 的历史修订？这会创建一个新的当前修订。`)) return
+      try {
+        await api.post('/api/templates/restore', { workspaceId: liveState.workspaceId, templateId, versionId, confirmedByUser: true })
+        liveState.templatePanel = null
+        await refreshWorkspaceTemplates({ rerender: true })
+        showToast('已恢复为新的模板修订；当前简历模板未被自动切换。')
+      } catch (error) { showToast(`恢复模板失败：${errorText(error)}`) }
     }))
     updateTemplateCards()
   } catch (error) {

@@ -13,6 +13,7 @@ import { ensureWorkspace, listWorkspacePreviews } from '../src/core/workspace.js
 import { withSessionLock } from '../src/core/session.js'
 import { createSessionStore } from '../src/core/session-store.js'
 import { createWorkspaceRegistry } from '../src/core/workspace-registry.js'
+import { getPresentationOverride, presentationWithOverride } from '../src/migrated/resume-engine/presentation.js'
 
 function task(targetPages = 1) { return createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume-1', targetPages }) }
 
@@ -125,6 +126,16 @@ test('presentation suggestions require current metrics and never write by themse
   assert.equal(suggestion.requiresUserConfirmation, true)
   assert.ok(suggestion.patch.layout.fontSize > 14)
   assert.equal(current.measurements.occupancy[0], 0.62)
+})
+
+test('presentation override merges bounded groups and reset only clears the current resume override', () => {
+  const first = presentationWithOverride({}, { templateId: 'campus-standard', resumePath: 'resume.md', layout: { fontSize: 13 }, visual: { accentColor: '#2563eb' } })
+  const merged = presentationWithOverride(first, { templateId: 'campus-standard', resumePath: 'resume.md', layout: { lineHeight: 1.45 }, iconTuning: { '*': { scale: 1.1 } } })
+  assert.deepEqual(getPresentationOverride(merged, 'campus-standard', 'resume.md').layout, { fontSize: 13, lineHeight: 1.45 })
+  assert.equal(getPresentationOverride(merged, 'campus-standard', 'resume.md').visual.accentColor, '#2563eb')
+  assert.equal(getPresentationOverride(merged, 'campus-standard', 'resume.md').iconTuning['*'].scale, 1.1)
+  const reset = presentationWithOverride(merged, { templateId: 'campus-standard', resumePath: 'resume.md', reset: true })
+  assert.deepEqual(getPresentationOverride(reset, 'campus-standard', 'resume.md'), {})
 })
 
 test('template selection returns a blocked draft to drafting so it can be rendered again', () => {

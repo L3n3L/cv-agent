@@ -29,6 +29,15 @@ export async function listWorkspaceTemplates(root) {
     revision: Number(template.metadata?.revision || 1),
     immutable: Boolean(template.metadata?.immutable),
     sourceTemplateId: template.metadata?.sourceTemplateId || null,
+    presentationDefaults: {
+      layout: {
+        fontFamily: template.typography?.fontFamily,
+        fontSize: template.typography?.fontSize,
+        lineHeight: template.typography?.lineHeight,
+        sectionGap: template.spacing?.sectionGap,
+        pageMargin: template.spacing?.pageMargin,
+      },
+    },
   }))
 }
 

@@ -457,6 +457,25 @@ ${bodyHtml}
         icon.style.setProperty('--cvagent-icon-offset-y', String(offsetY));
       }
     };
+    const applyLayoutPreview = (layout = {}) => {
+      const fontSize = safeNumber(layout.fontSize, 11, 18, template.typography.fontSize);
+      const lineHeight = safeNumber(layout.lineHeight, 1.2, 2, template.typography.lineHeight);
+      const sectionGap = safeNumber(layout.sectionGap, 6, 30, template.spacing.sectionGap);
+      const pageMargin = safeNumber(layout.pageMargin, 24, 72, template.spacing.pageMargin);
+      const fontFamily = fontFamilies[layout.fontFamily] || templateFont;
+      rootStyle.setProperty('--resume-font-size', fontSize + 'px');
+      rootStyle.setProperty('--resume-line-height', String(lineHeight));
+      rootStyle.setProperty('--resume-section-gap', sectionGap + 'px');
+      rootStyle.setProperty('--resume-page-margin', pageMargin + 'px');
+      rootStyle.setProperty('--resume-font-family', fontFamily);
+      const manualStyle = document.querySelector('[data-cvagent-manual-tokens]');
+      if (manualStyle) manualStyle.textContent = [
+        'body{font-family:var(--resume-font-family) !important;line-height:' + lineHeight + ' !important;color:var(--resume-text-color) !important;}',
+        '.cvagent-resume-page-content{padding:' + pageMargin + 'px !important;}',
+        '.cvagent-resume-section{margin-bottom:' + sectionGap + 'px !important;}',
+        'p,li{font-size:' + fontSize + 'px;margin-bottom:' + template.spacing.paragraphGap + 'px;}',
+      ].join('');
+    };
     rootStyle.setProperty('--resume-font-size', template.typography.fontSize + 'px');
     rootStyle.setProperty('--resume-line-height', template.typography.lineHeight);
     rootStyle.setProperty('--resume-font-family', activeFont);
@@ -569,6 +588,10 @@ ${bodyHtml}
     window.addEventListener('message', (event) => {
       if (event.data?.source === 'cvagent-resume-icon-tuning') {
         applyIconTuning(event.data.icons || {});
+        return;
+      }
+      if (event.data?.source === 'cvagent-resume-layout-preview') {
+        applyLayoutPreview(event.data.layout || {});
         return;
       }
       if (event.data?.source !== 'cvagent-resume-token-preview') return;

@@ -12,12 +12,14 @@ export function createExecutionModeMiddleware(mode) {
   return createMiddleware({
     name: 'CVAgentExecutionMode',
     wrapModelCall: (request, handler) => {
-      if (mode === AGENT_EXECUTION_MODES.PRODUCTION) return handler(request)
-      const tools = request.tools.filter((candidate) => mode === AGENT_EXECUTION_MODES.READ_ONLY && READ_ONLY_TOOLS.has(candidate.name))
+      // Normal chat stays on the native DeepAgent tool surface. The model decides
+      // whether a tool is relevant; the tools and server-side gates enforce side
+      // effects. Only an explicit read-only request narrows the tool surface.
+      if (mode === AGENT_EXECUTION_MODES.CHAT || mode === AGENT_EXECUTION_MODES.PRODUCTION) return handler(request)
+      const tools = request.tools.filter((candidate) => READ_ONLY_TOOLS.has(candidate.name))
       return handler({
         ...request,
         tools,
-        ...(mode === AGENT_EXECUTION_MODES.CHAT ? { toolChoice: 'none' } : {}),
       })
     },
   })

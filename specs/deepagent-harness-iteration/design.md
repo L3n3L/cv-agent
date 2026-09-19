@@ -30,9 +30,9 @@ DSH 简历领域流程          → native resume-production Skill
 ## 工具与门禁
 
 - 工具描述继续定义输入、输出和副作用；工具不依赖模型理解来保护写入、当前草稿、`renderId` 和正式保存。
-- `execution-mode-middleware` 过滤 chat/read-only 的工具面；生产模式启用官方 `todoListMiddleware`。
+- `execution-mode-middleware` 只过滤显式 `read_only` 的工具面；`chat` 保留原生 DeepAgent 工具，由模型判断是否调用；生产模式额外挂载官方 `todoListMiddleware`。
 - `resume_finalize` 继续作为完成门；真实浏览器测量继续通过当前 `renderId` 回写。
-- 普通对话和只读检查不加载生产 Skill，避免无关上下文和规划卡片污染用户聊天。
+- 普通对话加载领域 Skill 以便 Agent 理解工作区和简历动作，但不加载规划 middleware；只读检查不加载 Skill，避免违反只读边界。
 
 ## 兼容性与取舍
 
@@ -51,7 +51,7 @@ Skill 是模型指导，不是安全边界。真实测量、旧 render 拒绝、
 ## 测试策略
 
 1. 静态契约：Skill frontmatter、DSH 来源版本、关键流程词和文件状态。
-2. Agent 配置：生产模式含 native skill source；chat/read-only 不含。
-3. 服务器输入：生产调用带 StateBackend skill file；其他模式不带。
+2. Agent 配置：chat/production 含 native skill source；read-only 不含；只有 production 含规划 middleware。
+3. 服务器输入：chat/production 调用带 StateBackend skill file；read-only 不带。
 4. 回归：后端全量测试、前端构建、真实浏览器生产链路和截图验收。
 5. 观察：现有日志记录 executionMode、toolName、renderId；Skill source/version 先由静态元数据和自动化测试校验，后续再纳入日志，不记录用户简历正文和模型私有推理。

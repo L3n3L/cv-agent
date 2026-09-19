@@ -164,7 +164,7 @@ async function runAgentTurn(session, message, options = {}) {
   const agent = await options.agentFactory({ tools, task, taskRef, executionMode })
   if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
   const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
-  if (executionMode === AGENT_EXECUTION_MODES.PRODUCTION) input.files = await resumeProductionSkillFiles()
+  if (executionMode !== AGENT_EXECUTION_MODES.READ_ONLY) input.files = await resumeProductionSkillFiles()
   const streamed = await runAgentWithStreaming(agent, input, {
     onAssistantStart: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
     onAssistantDelta: ({ messageId, delta }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),

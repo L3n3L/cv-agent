@@ -21,12 +21,15 @@ test('DSH resume contract is represented by a native DeepAgent skill', async () 
   assert.equal(files[RESUME_PRODUCTION_SKILL_FILE].content, skill)
 })
 
-test('only production mode mounts the native resume skill middleware', async () => {
+test('open and production modes mount the native resume skill middleware', async () => {
   const chat = createResumeAgent({ model: new FakeListChatModel({ responses: ['ok'] }), executionMode: 'chat', tools: [] })
+  const readOnly = createResumeAgent({ model: new FakeListChatModel({ responses: ['ok'] }), executionMode: 'read_only', tools: [] })
   const production = createResumeAgent({ model: new FakeListChatModel({ responses: ['ok'] }), executionMode: 'production', tools: [] })
   const chatGraph = await chat.getGraphAsync()
+  const readOnlyGraph = await readOnly.getGraphAsync()
   const productionGraph = await production.getGraphAsync()
-  assert.equal(Object.keys(chatGraph.nodes).some((name) => name.startsWith('SkillsMiddleware')), false)
+  assert.equal(Object.keys(chatGraph.nodes).some((name) => name.startsWith('SkillsMiddleware')), true)
+  assert.equal(Object.keys(readOnlyGraph.nodes).some((name) => name.startsWith('SkillsMiddleware')), false)
   assert.equal(Object.keys(productionGraph.nodes).some((name) => name.startsWith('SkillsMiddleware')), true)
 })
 

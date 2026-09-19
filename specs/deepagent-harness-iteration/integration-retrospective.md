@@ -4,6 +4,8 @@
 
 ## 结论
 
+> 当前执行策略已在 2026-09-19 修订：普通对话不再清空 DeepAgent 工具或设置 `toolChoice: none`。最新边界和验收以 [open-tool-surface-retrospective.md](./open-tool-surface-retrospective.md) 为准；本文其余内容保留为上一阶段的对接记录。
+
 本轮不把所有用户消息硬编码成多轮生产任务。DeepAgents 负责提供可组合的 Agent harness：工具循环、middleware、规划、状态和流式事件；CVAgent 负责把简历领域的执行模式、真实浏览器测量和正式保存授权接到这个 harness 上。
 
 需要明确区分：

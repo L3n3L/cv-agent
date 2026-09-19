@@ -12,6 +12,7 @@ import { RESUME_PRODUCTION_SKILL_SOURCE } from './resume-production-skill.js'
 export function createResumeAgent(options = {}) {
   if (!options.model) throw new Error('model is required to create the resume agent')
   const executionMode = options.executionMode || AGENT_EXECUTION_MODES.CHAT
+  const skillEnabled = executionMode !== AGENT_EXECUTION_MODES.READ_ONLY
   const middleware = [
     ...(executionMode === AGENT_EXECUTION_MODES.PRODUCTION ? [todoListMiddleware()] : []),
     createExecutionModeMiddleware(executionMode),
@@ -21,7 +22,7 @@ export function createResumeAgent(options = {}) {
     tools: Array.isArray(options.tools) ? options.tools : [],
     middleware,
     systemPrompt: `${CVAGENT_SYSTEM_PROMPT}\n\n${executionModeInstruction(executionMode)}\n\n${String(options.systemPrompt || '').trim()}`.trim(),
-    ...(executionMode === AGENT_EXECUTION_MODES.PRODUCTION ? { skills: [RESUME_PRODUCTION_SKILL_SOURCE] } : {}),
+    ...(skillEnabled ? { skills: [RESUME_PRODUCTION_SKILL_SOURCE] } : {}),
     ...(options.backend ? { backend: options.backend } : {}),
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     ...(options.memory ? { memory: options.memory } : {}),

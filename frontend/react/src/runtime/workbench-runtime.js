@@ -11,7 +11,6 @@ const routeCopy = {
   versions: { kicker: '工作区成果', title: '投递版本' },
 }
 let currentRoute = 'workbench'
-let activeSessionId = ''
 const liveState = {
   workspaceId: '',
   workspace: null,
@@ -57,14 +56,21 @@ let previewFitFrame = 0
 const A4_PREVIEW_SIZE = Object.freeze({ width: 794, height: 1123 })
 
 function previewUrl() {
-  return activeSessionId && liveState.renderId
-    ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}&renderId=${encodeURIComponent(liveState.renderId)}`
+  return liveState.sessionId && liveState.renderId
+    ? `/api/agent/preview?sessionId=${encodeURIComponent(liveState.sessionId)}&renderId=${encodeURIComponent(liveState.renderId)}`
     : ''
 }
 
 function templatePreviewUrl(templateId) {
-  if (!activeSessionId || !templateId) return ''
-  return `/api/template-preview?sessionId=${encodeURIComponent(activeSessionId)}&templateId=${encodeURIComponent(templateId)}&t=${encodeURIComponent(liveState.renderId || 'draft')}`
+  if (!liveState.sessionId || !templateId) return ''
+  return `/api/template-preview?sessionId=${encodeURIComponent(liveState.sessionId)}&templateId=${encodeURIComponent(templateId)}&t=${encodeURIComponent(liveState.renderId || 'draft')}`
+}
+
+function currentPreviewState() {
+  if (!liveState.workspace) return { status: 'no_workspace', message: '选择工作区后显示真实预览', url: '' }
+  if (liveState.loading || !liveState.sessionId) return { status: 'loading', message: '正在加载当前简历和预览', url: '' }
+  if (!liveState.renderId) return { status: 'awaiting_render', message: '当前草稿尚未生成预览', url: '' }
+  return { status: 'ready', message: '正在加载真实预览', url: previewUrl() }
 }
 
 function applyTemplateContext(context = {}) {
@@ -410,14 +416,17 @@ function syncPreviewFrames() {
         delete frame.dataset.documentHeight
         frame.style.height = `${A4_PREVIEW_SIZE.height}px`
         frame.closest('.direct-preview-frame-wrap, .full-real-frame-wrap')?.style.removeProperty('height')
-        frame.src = src
+        if (frame.getAttribute('src') !== src) frame.src = src
       }
       return
     }
+    // The direct A4 iframe is owned by React. Its empty state is rendered by
+    // A4Pane, so this DOM-oriented runtime must never replace that node.
+    if (frame.closest('.direct-preview-stage')) return
     const empty = document.createElement('div')
     empty.className = 'preview-empty'
     empty.setAttribute('role', 'status')
-    empty.textContent = '选择工作区后显示真实预览'
+    empty.textContent = currentPreviewState().message
     frame.replaceWith(empty)
   })
   syncTemplatePreviewFrames()
@@ -626,7 +635,6 @@ async function restoreSession(sessionId) {
     liveState.workspace = body.workspace || liveState.workspace
     liveState.workspaceId = liveState.workspace?.id || session.workspaceId || liveState.workspaceId
     liveState.sessionId = session.sessionId || sessionId
-    activeSessionId = liveState.sessionId
     liveState.resumePath = body.source?.path || session.resumePath || liveState.resumePath
     liveState.sourceContent = body.source?.content || liveState.sourceContent
     liveState.draftContent = body.draft?.content || liveState.sourceContent
@@ -674,6 +682,12 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.workspace = workspace
   liveState.workspaceId = workspace.id
   liveState.sessionId = ''
+  liveState.sourceContent = ''
+  liveState.draftContent = ''
+  liveState.renderId = ''
+  liveState.workflowState = 'intake'
+  liveState.measurement = null
+  liveState.measuredRenderKey = ''
   liveState.agentEvents = []
   liveState.agentTurnId = ''
   liveState.agentRunActive = false
@@ -682,7 +696,6 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.agentRunError = ''
   liveState.streamingAssistantText = ''
   liveState.streamingMessageId = ''
-  activeSessionId = ''
   updateConnectionStatus()
   showToast('正在加载工作区…')
   try {
@@ -711,7 +724,10 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
-    activeSessionId = liveState.sessionId
+    // Commit the bootstrap state before React mounts the panes. Otherwise the
+    // first A4 render observes loading=true and never receives a later prop
+    // update after the finally block clears it.
+    liveState.loading = false
     await loadSessionsForWorkspace()
     updateConnectionStatus()
     renderRoute('workbench')
@@ -720,14 +736,21 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.workspace = null
     liveState.workspaceId = ''
     liveState.sessionId = ''
+    liveState.sourceContent = ''
+    liveState.draftContent = ''
+    liveState.renderId = ''
+    liveState.workflowState = 'intake'
+    liveState.measurement = null
+    liveState.measuredRenderKey = ''
     liveState.agentEvents = []
     liveState.agentRunActive = false
     liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
-    activeSessionId = ''
+    liveState.loading = false
     updateConnectionStatus()
+    if (currentRoute === 'workbench') refreshReactPanes()
     showToast(`工作区加载失败：${errorText(error)}`)
   } finally {
     liveState.loading = false
@@ -1119,6 +1142,7 @@ async function saveDraftAndRender(content) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
+    refreshReactPanes()
     syncPreviewFrames()
     updateHeader()
     const editorState = $('#editorState')
@@ -1151,6 +1175,7 @@ async function applyPresentationTuning(valuesOverride = null) {
     liveState.blockerCount = 0
     liveState.measurement = null
     liveState.measuredRenderKey = ''
+    refreshReactPanes()
     syncPreviewFrames()
     updateHeader()
     const panel = $('#presentationPanel')
@@ -1177,6 +1202,7 @@ function refreshReactPanes() {
   if (previewMount && window.CVAgentReact?.mountA4Pane) {
     window.CVAgentReact.mountA4Pane(previewMount, {
       templateName: liveState.templateName || liveState.templateId,
+      preview: currentPreviewState(),
       presentation: currentPresentationOverride(),
       templateLayout: liveState.templates.find((item) => item.id === liveState.templateId)?.presentationDefaults?.layout || {},
       onDraftChange: stagePresentationDraft,
@@ -1240,7 +1266,7 @@ function templateCard(template) {
   const name = escapeHtml(template.name || template.id)
   const id = escapeHtml(template.id)
   const tags = (Array.isArray(template.tags) ? template.tags : []).slice(0, 4)
-  const thumb = activeSessionId
+  const thumb = liveState.sessionId
     ? `<iframe class="template-real-thumb" data-template-id="${id}" title="${name}真实模板缩略图" loading="lazy"></iframe>`
     : '<div class="template-thumb-empty">选择工作区后显示真实模板</div>'
   const origin = escapeHtml(templateOrigin(template))
@@ -1679,6 +1705,11 @@ $('#newSession').addEventListener('click', () => {
   void bootstrapWorkspace(liveState.workspace, { createResume: !liveState.workspace.hasResume }).then(() => showToast('已创建新的隔离会话')).catch((error) => showToast(`新建会话失败：${errorText(error)}`))
 })
 window.addEventListener('cvagent:a4-pane-mounted', () => {
+  syncPreviewFrames()
+  bindPreviewFit()
+  updateHeader()
+})
+window.addEventListener('cvagent:a4-preview-changed', () => {
   syncPreviewFrames()
   bindPreviewFit()
   updateHeader()

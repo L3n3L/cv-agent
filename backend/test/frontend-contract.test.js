@@ -117,6 +117,7 @@ test('React shell uses one shared header geometry contract across brand, route, 
   assert.match(css, /\.sidebar > \.brand-lockup \{[\s\S]*?height:var\(--shell-header-height\);[\s\S]*?padding:12px var\(--pane-inline-padding\) 10px;/)
   assert.match(css, /\.sidebar > \.brand-lockup \.pane-header-copy > b,[\s\S]*?\.main-stage > \.route-header \.route-title-line > h1,[\s\S]*?\.assistant-drawer > \.drawer-header \.pane-header-copy > b \{[\s\S]*?font-size:var\(--shell-title-size\);/)
   assert.match(css, /\.sidebar > \.workspace-switcher \.workspace-copy b,[\s\S]*?\.editor-head \.pane-header-copy > b,[\s\S]*?\.direct-preview-head \.pane-header-copy > b \{[\s\S]*?font-size:var\(--pane-title-size\);/)
+  assert.match(css, /\.direct-preview-head \.preview-actions \.?button \{ box-sizing:border-box; width:auto; min-width:74px; height:32px; padding:0 10px; border:1px solid var\(--line\); border-radius:4px; color:var\(--muted\); background:#fff; white-space:nowrap; \}/)
   assert.match(css, /\.main-stage > \.route-header,[\s\S]*?\.assistant-drawer > \.drawer-header \{[\s\S]*?height:var\(--shell-header-height\);/)
   assert.match(css, /\.editor-head,.direct-preview-head \{[\s\S]*?height:var\(--pane-header-height\);[\s\S]*?padding:12px var\(--pane-inline-padding\) 10px;/)
   assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ padding:0; \}/)

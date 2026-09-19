@@ -150,7 +150,7 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
 
     const sseResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`)
     assert.equal(sseResponse.status, 200)
-    const ssePromise = waitForSseEvents(sseResponse, (events) => events.some((event) => event.payload?.event === 'verification_passed') && events.filter((event) => event.payload?.event === 'tool_call_succeeded').length >= 14)
+    const ssePromise = waitForSseEvents(sseResponse, (events) => events.some((event) => event.payload?.event === 'verification_passed') && events.filter((event) => event.payload?.event === 'tool_call_succeeded').length >= 14 && events.some((event) => event.payload?.event === 'agent_run_finished' && event.payload?.outcome === 'success'))
 
     const run = await jsonRequest(`${base}/api/agent/run`, { sessionId, workspaceRoot, resumePath: 'resume.md', message: '请检查当前简历，但先不要保存。' })
     assert.equal(run.response.status, 200)
@@ -200,6 +200,10 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     assert.equal(measured.response.status, 200)
     assert.equal(measured.body.state, TASK_STATES.ACCEPTED)
     assert.equal(measured.body.verification.passed, true)
+    assert.equal(measured.body.runState, 'idle')
+    const acceptedSession = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+    assert.equal(acceptedSession.session.runState, 'idle')
+    assert.equal(acceptedSession.session.lastError, null)
 
     const sseEvents = await ssePromise
     const toolOrder = sseEvents
@@ -214,6 +218,7 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     assert.ok(sseEvents.some((event) => event.type === 'ready'))
     assert.ok(sseEvents.some((event) => event.payload?.event === 'verification_blocked'))
     assert.ok(sseEvents.some((event) => event.payload?.event === 'verification_passed'))
+    assert.ok(sseEvents.some((event) => event.payload?.event === 'agent_run_finished' && event.payload?.outcome === 'success'))
     assert.ok(sseEvents.every((event) => event.type === 'ready' || (event.payload.sessionId === sessionId && event.payload.runId && event.payload.taskId)))
 
     const rejectedSave = await jsonRequest(`${base}/api/agent/save`, { sessionId, name: 'test-version' })

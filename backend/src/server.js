@@ -133,6 +133,7 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     ...(event.assistantChars !== undefined ? { assistantChars: Math.max(0, Number(event.assistantChars) || 0) } : {}),
     ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+    ...(event.reason ? { reason: safeProgressText(event.reason, 96) } : {}),
     ...(event.delta ? { delta: safeProgressText(event.delta, 2000) } : {}),
     ...(event.phase || progress.phase ? { phase: safeProgressText(event.phase || progress.phase, 48) } : {}),
     ...(event.reasoningSummary || progress.reasoningSummary ? { reasoningSummary: safeProgressText(event.reasoningSummary || progress.reasoningSummary) } : {}),
@@ -161,13 +162,30 @@ async function runAgentTurn(session, message, options = {}) {
   await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, executionMode, ...contextFields(task.context) })
   await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, executionMode, resumePath: session.resumePath })
   await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
-  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: options.onWorkflowEvent })
+  const abortController = new AbortController()
+  let pauseAfterRender = false
+  let completeAfterFinalize = false
+  const onToolSuccess = async (event = {}) => {
+    await sessionToolPersistence(options.sessionStore, session)(event)
+    if (isProductionExecutionMode(executionMode) && event.toolName === 'resume_render') {
+      pauseAfterRender = true
+      abortController.abort(Object.assign(new Error('waiting for browser measurement'), { code: 'AGENT_WAITING_FOR_MEASUREMENT' }))
+    }
+    if (event.toolName === 'resume_finalize' && taskRef.current.state === 'accepted') {
+      completeAfterFinalize = true
+      abortController.abort(Object.assign(new Error('resume finalized'), { code: 'AGENT_FINALIZED' }))
+    }
+  }
+  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess, onWorkflowEvent: options.onWorkflowEvent })
   const agent = await options.agentFactory({ tools, task, taskRef, executionMode })
   if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
   const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
   if (executionMode !== AGENT_EXECUTION_MODES.READ_ONLY) input.files = await resumeProductionSkillFiles()
   const assistantStreamChars = new Map()
-  const streamed = await runAgentWithStreaming(agent, input, {
+  let streamed
+  try {
+    streamed = await runAgentWithStreaming(agent, input, {
+      signal: abortController.signal,
     onAssistantStart: async ({ messageId }) => {
       assistantStreamChars.set(messageId, 0)
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, { ...task, sessionId: session.sessionId }, { messageId, mode, executionMode })
@@ -182,7 +200,35 @@ async function runAgentTurn(session, message, options = {}) {
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, { ...task, sessionId: session.sessionId }, { messageId, assistantChars, mode, executionMode })
       await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, assistantChars, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
     },
-  })
+    })
+  } catch (error) {
+    if (!pauseAfterRender && !completeAfterFinalize) throw error
+  }
+  if (pauseAfterRender) {
+    const pausedTask = taskRef.current
+    session.runState = 'waiting_for_measurement'
+    session.status = pausedTask.state
+    session.lastError = null
+    const pauseDetails = { state: pausedTask.state, mode, executionMode, renderId: pausedTask.context.renderId, reason: 'browser_measurement_required', ...contextFields(pausedTask.context) }
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, outcome: 'paused', ...pauseDetails })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_PAUSED, { ...pausedTask, sessionId: session.sessionId }, pauseDetails)
+    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'paused', ...pauseDetails })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...pausedTask, sessionId: session.sessionId }, { outcome: 'paused', ...pauseDetails })
+    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
+    return { result: streamed?.result || { messages: [] }, task: pausedTask, paused: true }
+  }
+  if (completeAfterFinalize) {
+    const completedTask = taskRef.current
+    session.runState = 'idle'
+    session.status = completedTask.state
+    session.lastError = null
+    const finishDetails = { outcome: 'success', state: completedTask.state, mode, executionMode, ...contextFields(completedTask.context) }
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, ...finishDetails })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...completedTask, sessionId: session.sessionId }, finishDetails)
+    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...completedTask, sessionId: session.sessionId }, ...finishDetails })
+    return { result: streamed?.result || { messages: [] }, task: completedTask, completedEarly: true }
+  }
   const result = streamed.result
   if (Array.isArray(result?.messages)) session.messages = result.messages
   const nextTask = taskRef.current
@@ -813,7 +859,17 @@ async function handleMeasurement(request, response, options) {
       return { measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) }
     })
     const autoContinuation = scheduleMeasurementContinuation(session, input.renderId, result.verification, options)
-    sendJson(response, 200, { ok: true, sessionId, ...result, autoContinuation })
+    if (result.verification?.state === 'accepted' || session.taskRef.current.state === 'accepted') {
+      const acceptedTask = session.taskRef.current
+      session.runState = 'idle'
+      session.status = acceptedTask.state
+      session.lastError = null
+      const finishDetails = { outcome: 'success', state: acceptedTask.state, mode: 'measurement_callback', executionMode: session.executionMode, ...contextFields(acceptedTask.context) }
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, ...finishDetails })
+      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...acceptedTask, sessionId: session.sessionId }, finishDetails)
+      await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...acceptedTask, sessionId: session.sessionId }, ...finishDetails }, options.sessionStore)
+    }
+    sendJson(response, 200, { ok: true, sessionId, ...result, runState: session.runState, autoContinuation })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'MEASUREMENT_FAILED'), errorMessage: String(error?.message || error) }
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MEASUREMENT_INVALID', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'TOOL_FAILED'])
@@ -896,7 +952,7 @@ async function handleAgentRun(request, response, options) {
     const execute = () => withSessionLock(session, async () => {
       const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
-      return { sessionId, executionMode, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
+      return { sessionId, executionMode, assistantText: assistantText(turn.result), state: task.state, runState: session.runState, paused: Boolean(turn.paused), context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
     })
     const streamRequested = new URL(request.url, 'http://127.0.0.1').searchParams.get('stream') === '1'
     if (streamRequested) {

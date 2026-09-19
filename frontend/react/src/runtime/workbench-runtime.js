@@ -159,12 +159,20 @@ function connectWorkflowEvents() {
       syncPreviewFrames()
       updateHeader()
     }
+    if (payload.event === 'agent_run_paused') {
+      liveState.agentRunActive = false
+      liveState.agentRunError = ''
+      updateSessionStatus('等待 A4 测量')
+    }
     if (payload.event === 'agent_run_finished') {
       liveState.agentRunActive = false
       const failed = payload.outcome === 'failed'
       if (failed) {
         liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
         updateSessionStatus('Agent 执行失败')
+      } else if (payload.outcome === 'paused') {
+        liveState.agentRunError = ''
+        updateSessionStatus('等待 A4 测量')
       }
       void syncActiveSessionFromServer({ preserveLiveTurn: failed })
     }
@@ -214,6 +222,7 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
       syncPreviewFrames()
       updateHeader()
       if (liveState.agentRunError) updateSessionStatus('Agent 执行失败')
+      else if (session.runState === 'waiting_for_measurement') updateSessionStatus('等待 A4 测量')
       else if (liveState.agentRunActive) updateSessionStatus('Agent 处理中')
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
       void loadSessionsForWorkspace()
@@ -821,7 +830,10 @@ function showToast(message) {
   toast.textContent = message
   toast.classList.add('show')
   window.clearTimeout(showToast.timer)
-  showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2200)
+  showToast.timer = window.setTimeout(() => {
+    toast.classList.remove('show')
+    toast.textContent = ''
+  }, 2200)
 }
 
 function updateSessionStatus(status) {
@@ -914,7 +926,6 @@ function renderChatRefined() {
     events: liveState.agentEvents,
     sessionReady: Boolean(liveState.sessionId),
     activeRun: liveState.agentRunActive,
-    streamingAssistantText: liveState.streamingAssistantText,
     error: liveState.agentRunError,
   })
   return `<div class="chat-layout"><div class="chat-stream" data-testid="agent-timeline" role="log" aria-live="polite">${timeline}</div><form class="composer" id="composer" data-testid="agent-composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送</span><button type="submit">发送</button></div></form></div>`

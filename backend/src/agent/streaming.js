@@ -50,7 +50,7 @@ export async function runAgentWithStreaming(agent, input, options = {}) {
     return { result: await agent.invoke(input), streamed: false }
   }
 
-  const run = await agent.streamEvents(input, { version: 'v3' })
+  const run = await agent.streamEvents(input, { version: 'v3', ...(options.signal ? { signal: options.signal } : {}) })
   let assistantMessageCount = 0
   const messageStream = isAsyncIterable(run?.messages)
     ? (async () => {

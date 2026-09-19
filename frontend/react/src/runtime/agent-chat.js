@@ -1,4 +1,4 @@
-import { runEventStatus } from './agent-chat-state.js'
+import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'
 
 ;(function initAgentChat(global) {
   const toolLabels = {
@@ -28,6 +28,7 @@ import { runEventStatus } from './agent-chat-state.js'
   const statusLabels = {
     running: '进行中',
     done: '完成',
+    waiting: '等待测量',
     blocked: '需调整',
     failed: '失败',
     idle: '等待',
@@ -260,7 +261,7 @@ import { runEventStatus } from './agent-chat-state.js'
     // Do not render an empty "preparing tools" card for those turns; a tool
     // timeline is useful only when it contains an actual tool lifecycle.
     const isToolEvent = (event) => ['tool_call_started', 'tool_call_succeeded', 'tool_call_failed'].includes(event.event)
-    return groups.filter((group) => group.events.some(isToolEvent))
+    return groups.filter((group) => group.events.some((event) => isToolEvent(event) || event.event === 'assistant_message_started' || event.event === 'assistant_delta'))
   }
 
   function formatSummaryValue(key, value) {
@@ -278,38 +279,6 @@ import { runEventStatus } from './agent-chat-state.js'
     return items.length ? `<div class="tool-detail">${items.join('')}</div>` : ''
   }
 
-  function processRows(events) {
-    const rows = []
-    const rowByKey = new Map()
-    const activeToolRows = new Map()
-    for (const event of events) {
-      const isTool = event.event === 'tool_call_started' || event.event === 'tool_call_succeeded' || event.event === 'tool_call_failed'
-      if (!isTool) continue
-      const toolName = String(event.toolName || 'agent')
-      let key
-      if (event.event === 'tool_call_started') {
-        key = `tool:${event.toolCallId || `${toolName}:${rows.length}`}`
-        activeToolRows.set(toolName, key)
-      } else {
-        key = event.toolCallId ? `tool:${event.toolCallId}` : activeToolRows.get(toolName) || `tool:${toolName}:${rows.length}`
-      }
-      if (!rowByKey.has(key)) {
-        const row = { key, label: toolLabels[event.toolName] || event.toolName || 'Agent 工具', state: 'running', detail: '', summary: null, timestamp: event.timestamp, durationMs: null, phase: event.phase || '' }
-        rowByKey.set(key, row)
-        rows.push(row)
-      }
-      const row = rowByKey.get(key)
-      row.timestamp = event.timestamp || row.timestamp
-      row.durationMs = event.durationMs ?? row.durationMs
-      if (event.event === 'tool_call_succeeded') row.state = 'done'
-      if (event.event === 'tool_call_failed') row.state = 'blocked'
-      if (event.errorCode) row.detail = event.errorCode
-      if (event.resultSummary) row.summary = event.resultSummary
-      if (event.phase) row.phase = event.phase
-    }
-    return rows
-  }
-
   function renderMessage(message, index) {
     const isUser = message.role === 'user'
     const role = isUser ? '用户' : 'Agent'
@@ -318,24 +287,37 @@ import { runEventStatus } from './agent-chat-state.js'
     return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" aria-label="${role}消息" data-message-index="${index}"><div class="message-meta"><span>${role}</span>${time ? `<time>${escapeHtml(time)}</time>` : ''}</div><div class="message-content${isUser ? '' : ' markdown-body'}">${body}</div></article>`
   }
 
-  function renderRunGroup(group, index, { open = false } = {}) {
-    const status = runEventStatus(group.events)
-    const rows = processRows(group.events)
-    const statusText = statusLabels[status] || status
-    const runRows = rows.length ? rows.map((row) => {
-      const detail = `${renderToolSummary(row.summary)}${row.detail ? `<div class="tool-detail">${escapeHtml(row.detail)}</div>` : ''}`
-      const duration = row.durationMs !== null && row.durationMs !== undefined ? `${Math.max(0, Math.round(Number(row.durationMs) || 0))} ms` : ''
-      return `<details class="tool-row" ${row.state === 'blocked' ? 'open' : ''}><summary><i class="tool-state ${escapeHtml(row.state)}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><time>${escapeHtml(duration || statusLabels[row.state] || '')}</time></summary>${detail}</details>`
-    }).join('') : '<div class="tool-empty">正在处理</div>'
-    const summary = rows.length ? `已执行 ${rows.length} 项工具` : '正在准备工具'
-    const expanded = status === 'running' || status === 'failed' || status === 'blocked' || open
-    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${expanded ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
+  function renderToolEntry(entry) {
+    const detail = `${renderToolSummary(entry.summary)}${entry.detail ? `<div class="tool-detail">${escapeHtml(entry.detail)}</div>` : ''}`
+    const duration = entry.durationMs !== null && entry.durationMs !== undefined ? `${Math.max(0, Math.round(Number(entry.durationMs) || 0))} ms` : ''
+    const label = toolLabels[entry.toolName] || entry.toolName || 'Agent 工具'
+    return `<details class="tool-row ${escapeHtml(entry.state)}"><summary><i class="tool-state ${escapeHtml(entry.state)}" aria-hidden="true"></i><span>${escapeHtml(label)}</span><time>${escapeHtml(duration || statusLabels[entry.state] || '')}</time></summary>${detail}</details>`
   }
 
-  function renderInterleavedTimeline(messages, groups, { openLatest = false } = {}) {
-    const normalized = normalizedMessages(messages)
-    if (!normalized.length) return groups.map((group, index) => renderRunGroup(group, index, { open: openLatest && index === groups.length - 1 }))
+  function renderAssistantEntry(entry, activeRun) {
+    const text = String(entry.text || '')
+    if (!text.trim()) return ''
+    const caret = activeRun && entry.state !== 'done' ? '<span class="streaming-caret" aria-hidden="true"></span>' : ''
+    return `<article class="message agent-message timeline-assistant" aria-label="Agent消息"><div class="message-meta"><span>Agent</span><time>${escapeHtml(readableTime(entry.timestamp))}</time></div><div class="message-content markdown-body">${renderMarkdown(text)}${caret}</div></article>`
+  }
 
+  function renderRunGroup(group, index, { activeRun = false } = {}) {
+    const status = runEventStatus(group.events)
+    const entries = projectWorkflowTimeline(group.events)
+    const statusText = statusLabels[status] || status
+    const toolCount = entries.filter((entry) => entry.kind === 'tool').length
+    const runRows = entries.map((entry) => entry.kind === 'tool' ? renderToolEntry(entry) : renderAssistantEntry(entry, activeRun)).join('') || '<div class="tool-empty">正在处理</div>'
+    return `<section class="tool-group run-trace ${escapeHtml(status)}" aria-label="Agent 工作流" data-run-index="${index}"><div class="run-label"><b>Agent 工作流</b><span>${toolCount ? `${toolCount} 项工具 · ` : ''}${escapeHtml(statusText)}</span></div>${runRows}</section>`
+  }
+
+  function renderInterleavedTimeline(messages, groups, { activeRun = false } = {}) {
+    const normalized = normalizedMessages(messages)
+    if (!normalized.length) return groups.map((group, index) => renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
+
+    // A completed turn is represented in two stores: the append-only event
+    // rail (needed for live order) and the final session message snapshot.
+    // Once the event rail has the assistant text, the snapshot must not print
+    // that same text a second time. User messages remain snapshot-owned.
     // A conversation turn starts with a user message. Insert the matching
     // workflow group before that turn's final Agent answer, so tool work stays
     // in the same reading order as the conversation instead of being appended
@@ -360,13 +342,16 @@ import { runEventStatus } from './agent-chat-state.js'
         return indexes
       }, [])
       const insertionIndex = assistantIndexes.length ? assistantIndexes.at(-1) : turn.length
+      const groupForTurn = groupIndex < groups.length ? groups[groupIndex] : null
+      const groupRendersAssistant = groupForTurn ? workflowGroupHasAssistantText(groupForTurn) : false
 
       turn.forEach((message, index) => {
         if (index === insertionIndex && groupIndex < groups.length) {
-          content.push(renderRunGroup(groups[groupIndex], groupIndex, { open: openLatest && groupIndex === groups.length - 1 }))
+          content.push(renderRunGroup(groups[groupIndex], groupIndex, { activeRun: activeRun && groupIndex === groups.length - 1 }))
           groupIndex += 1
         }
-        content.push(renderMessage(message, messageIndex))
+        const isDuplicateEventAssistant = groupRendersAssistant && message.role === 'assistant'
+        if (!isDuplicateEventAssistant) content.push(renderMessage(message, messageIndex))
         messageIndex += 1
       })
     })
@@ -374,24 +359,15 @@ import { runEventStatus } from './agent-chat-state.js'
     // Keep unusual/bootstrap events visible even when the session has fewer
     // message turns than persisted workflow runs.
     while (groupIndex < groups.length) {
-      content.push(renderRunGroup(groups[groupIndex], groupIndex, { open: openLatest && groupIndex === groups.length - 1 }))
+      content.push(renderRunGroup(groups[groupIndex], groupIndex, { activeRun: activeRun && groupIndex === groups.length - 1 }))
       groupIndex += 1
     }
     return content
   }
 
-  function renderStreamingState(streamingAssistantText) {
-    const assistant = String(streamingAssistantText || '')
-    const blocks = []
-    if (assistant) blocks.push(`<article class="message agent-message streaming-message" aria-label="Agent 正在输出"><div class="message-meta"><span>Agent</span><time>实时</time></div><div class="message-content markdown-body">${renderMarkdown(assistant)}<span class="streaming-caret" aria-hidden="true"></span></div></article>`)
-    return blocks.join('')
-  }
-
-  function renderTimeline({ messages, events, sessionReady, activeRun = false, streamingAssistantText = '', error = '' }) {
+  function renderTimeline({ messages, events, sessionReady, activeRun = false, error = '' }) {
     const groups = eventGroups(events)
-    const content = renderInterleavedTimeline(messages, groups, { openLatest: activeRun || Boolean(error) })
-    const streaming = renderStreamingState(streamingAssistantText)
-    if (streaming) content.push(streaming)
+    const content = renderInterleavedTimeline(messages, groups, { activeRun })
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)
     if (!content.length) {
       content.push(`<div class="chat-empty"><strong>${sessionReady ? '开始对话' : '选择工作区'}</strong></div>`)

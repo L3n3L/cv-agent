@@ -1,7 +1,7 @@
 # Agent 会话 UI 与可观测性对接复盘方案
 
 更新：2026-09-19  
-状态：第一轮代码整理、自动化测试与真实浏览器验收已完成
+状态：事件时间线、测量暂停/恢复链路、终态归约与真实浏览器验收已完成
 
 ## 1. 目标与结论
 
@@ -54,7 +54,18 @@ AG-UI 将流式交互定义成有边界的事件序列，而不是任意文本�
 
 参考：https://github.com/ag-ui-protocol/ag-ui/blob/main/docs/concepts/events.mdx
 
-### 2.3 Vercel AI SDK UI
+### 2.3 OpenAI Agents / LangGraph 的流式生命周期
+
+官方 Agents SDK 将完整 stream 分成原始模型事件、消息/工具 run-item 事件和 Agent 生命周期事件；只消费文本流会丢失工具调用，调用方还必须持续 drain 到终态。LangGraph 原生提供 `interrupt`、checkpoint 和 `Command` 恢复机制，外部浏览器测量应当是运行状态的一次暂停/恢复，而不是一个和模型并发争抢 session 锁的普通 HTTP 回调。
+
+CVAgent 当前采用相同的边界，但保留自己的业务工具和 session 持久化：`assistant_message_*` 与 `tool_call_*` 进入同一时间线；`resume_render` 后进入 `waiting_for_measurement`，测量完成后按验收结果启动下一轮 continuation。
+
+参考：
+
+- https://openai.github.io/openai-agents-js/guides/streaming/
+- https://docs.langchain.com/oss/javascript/langgraph/interrupts
+
+### 2.4 Vercel AI SDK UI
 
 Vercel AI SDK 的 `useChat` 不只维护 `content`，而是把消息拆成 `parts`，其中可以并列存在文本、reasoning、tool-call、tool-result；它还明确区分 `submitted`、`streaming`、`ready`、`error`，并提供 `onFinish`、`onError`、`onData` 等生命周期入口。
 
@@ -100,6 +111,13 @@ SSE 收到 `agent_run_finished(outcome=failed)` 时只设置了 `agentRunError`�
 - 增加 Agent 助手消息开始/结束日志，结束日志只记录字符数，不记录正文；
 - 增加 SSE 连接异常的前端遥测，并带 `sessionId/runId/workflowEvent`，方便从浏览器问题定位到服务端日志；
 - 完成纯状态函数、SSE 诊断、流式消息生命周期和前端契约测试。
+- 新增 `projectWorkflowTimeline()`，按 `timestamp + 首次出现顺序` 将 Agent 文本和工具事件投影到同一条时间线上，终态事件只更新原行，不把工具组整体后置；
+- 工具详情统一使用默认闭合的 `details`，失败只在摘要显示状态，错误码和结果摘要需用户主动展开；
+- 空的 `assistant_message_started` 生命周期不渲染成“正在输出”占位，只有收到真实 delta 才进入消息轨道；隐藏的 toast 同时清空文本，避免辅助树和调试截图残留旧状态；
+- 增加 `agent_run_paused` 与 `waiting_for_measurement` 状态。生产 run 在 `resume_render` 成功后主动结束当前模型段、释放 session 锁，避免模型越过真实测量继续调用 `resume_finalize`；测量通过后，`resume_finalize` 将 `accepted` 视为本轮成功终点，即使底层 v3 stream 没有自行关闭，也会由服务端发出唯一的成功终态；
+- 测量回调只处理暂停后的当前 render，低密度或溢出时再启动新的 continuation run，不再把“等待测量”记录成 `AGENT_RUN_FAILED`；
+- Windows 持久化保留原子写入，但对目标文件短暂被浏览器/服务进程占用时的 `EACCES/EBUSY/EPERM` 做有上限的退避重试；超过上限仍然抛出真实错误，不吞异常；
+- 为上述时间线投影和等待态补充自动化测试，当前 backend 测试为 68/68。
 
 ## 4. 统一实现契约
 
@@ -112,10 +130,11 @@ sessionId
 runId
 taskId
 messageId?       // assistant_message_* / assistant_delta
-toolCallId?      // tool_call_*
-toolName?
-outcome?
-errorCode?
+  toolCallId?      // tool_call_*
+  toolName?
+  outcome?
+  reason?
+  errorCode?
 durationMs?
 resultSummary?   // 脱敏后的结构化摘要
 delta?           // 仅 assistant_delta，且只走实时 SSE
@@ -126,7 +145,7 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 1. 同一个 `sessionId + runId` 只对应一个运行组；
 2. 同一个 `toolCallId` 只对应一行工具记录，重复事件必须幂等；
 3. `assistant_delta` 只能追加到同一个 `messageId`，不能覆盖已经完成的 Agent 消息；
-4. `agent_run_finished(outcome=failed)` 的运行组必须是 `failed`，不能显示为 `done`；
+4. `agent_run_finished(outcome=failed)` 的运行组必须是 `failed`，不能显示为 `done`；`outcome=paused` 必须显示为 `waiting`，不能显示为错误；
 5. session 回放不能清除仍有本地证据的当前轮，成功终态才用持久化最终消息替换流式草稿；
 6. 工具和消息的可见状态必须来自真实事件，禁止前端生成“已执行 N 项工具”等没有事件依据的假进度；
 7. 所有异步回调在写入 UI 前检查当前 `sessionId + runId`，旧 run 不得覆盖新 run。
@@ -134,7 +153,7 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 ### 4.3 UI 呈现原则
 
 - Agent 最终回答是主内容；
-- 工具过程是同一轮回答下的低干扰折叠组，运行中自动展开，完成后收起，失败项保持可见；
+- 工具过程与 Agent 文本共用一条时间线；工具行默认折叠，运行中、完成和失败都不强制展开；
 - 工具行只显示名称、状态、耗时和必要的错误/结果摘要，不展示内部 prompt、重复状态文案或伪造“下一步”；
 - 连接中断显示为连接问题，不冒充 Agent 回复；
 - 页面刷新后恢复已持久化的消息和工具事件，仍在运行的 run 通过 session 状态恢复为可诊断状态。
@@ -148,7 +167,7 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 - SSE 结束时先完成 UI 状态归约，再做 session 同步，避免同步请求反向抹掉增量状态；
 - 统一更新 `routeStatus`、Agent 时间线和输入框可用状态。
 
-已完成第一轮：状态合并和失败收尾已集中到 `agent-chat-state.js` 与 `syncActiveSessionFromServer()`；实时 SSE 的首包刷新仍需单独验证。
+已完成：状态合并和失败收尾已集中到 `agent-chat-state.js` 与 `syncActiveSessionFromServer()`；时间线投影也已进入同一纯函数边界。
 
 ### 阶段 B：抽出纯事件归约层
 
@@ -156,6 +175,17 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 - 归约函数输入事件数组，输出 `RunViewModel[]`；
 - HTML/React 视图只负责渲染 ViewModel，不再自己判断事件状态；
 - 先保持现有 DOM 结构，避免把状态治理和视觉重做混在一起。
+
+已完成：`projectWorkflowTimeline()` 输出 assistant/tool entry，HTML 层只负责展示；工具默认闭合，未再通过 `open` 属性伪造过程状态。
+
+### 阶段 B.1：建立外部测量暂停边界
+
+- `resume_render` 是生产流程的阶段边界，不允许同一 Agent run 在没有当前浏览器测量时进入 finalize；
+- 暂停后 session 锁必须释放，测量请求能立即完成；
+- 测量通过则结束任务，测量不通过则通过新的 continuation run 继续，而不是复用已经越过边界的旧调用栈；
+- 暂停、恢复、失败分别记录独立事件，UI 不把暂停态渲染成失败。
+
+已完成：后端已接入 `agent_run_paused`、`waiting_for_measurement` 和 render 后 cooperative abort；自动 continuation 仍沿用原有预算与 renderId 幂等保护。
 
 ### 阶段 C：补齐调错设施
 
@@ -183,13 +213,13 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 
 ## 7. 验收清单
 
-- [~] 用户发送消息后，文本增量、工具行和最终回答在同一 Agent 时间线中按事件顺序出现；事件已生成并能回放，但刚刚这次真实浏览器运行暴露出实时小包刷新延迟，已补 SSE header flush / `setNoDelay`，需要重新做运行中截图验收；
-- [~] 工具调用过程中，工具行可见且显示进行中；工具结束后记录不消失；完成态回放已验证，实时可见性待修复后复测；
+- [x] 用户发送消息后，文本增量、工具行和最终回答在同一 Agent 时间线中按事件顺序出现；已通过真实浏览器运行中截图验收；
+- [x] 工具调用过程中，工具行可见且显示进行中；工具结束后记录不消失；已通过真实浏览器运行中截图验收；
 - [x] Agent 失败时，页面状态、运行组和错误信息一致，不再显示“仍在处理”；
 - [x] 刷新 Agent 面板后，已完成会话的消息和工具记录可恢复；
 - [x] 旧 run 的延迟事件不会覆盖新 run；
 - [x] 日志可用 `sessionId + runId + toolCallId` 定位一轮；
-- [x] 后端测试、React typecheck/build 和真实浏览器验证通过；
+- [x] 后端测试、React typecheck/build 和真实浏览器均已通过本轮变更后的复测；
 - [x] 截图验收只记录真实浏览器状态，不把静态占位文案当成 Agent 输出。
 
 ## 8. 复盘记录
@@ -198,8 +228,11 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 
 ## 9. 本轮验收记录
 
-- 自动化：backend `npm test` 67/67 通过；React `typecheck` 与 `build` 通过；
-- 真实浏览器：刷新回放、工具组保留和失败工具记录已验证；但刚刚运行中只先看到“收到真实素材”，工具过程直到结束后才集中出现，因此“完成后能回放”不能等同于“运行中实时可见”；本轮已补 SSE 首包刷新与 TCP 小包即时发送，需重新截取运行中状态确认；
+- 自动化：backend `npm test` 69/69 通过；React `typecheck` 与 `build` 通过；新增“暂停后成功终态覆盖旧暂停态”的状态归约测试；
+- 真实浏览器：运行中可先看到 Agent 文本，再看到按到达顺序追加的工具行；工具行默认折叠；`resume_render` 后显示“等待测量”，真实测量完成后状态收口为完成，不再显示 `AGENT_RUN_FAILED`；刷新后仍能回放已持久化事件；
 - 服务端日志：本轮真实失败可定位到 `session_683075da-c83a-41b4-bee8-5028e7f05336` / `run-694f7e52-7dcc-4773-b7dc-a27a5832a471`。日志原始时间是 UTC：`04:34:51Z` 开始，`04:35:43Z` 结束，换算香港时间为 `12:34:51`–`12:35:43`；期间存在连续的 `tool_call_started/succeeded`，并非没有工具调用；
 - 失败根因：`render_61a2ee80-9208-46c7-b58f-d6a31888721c` 虽然已生成，但浏览器测量请求对当前 render 没有形成有效匹配，随后 `presentation_suggest` 报 `MEASUREMENT_REQUIRED`，`resume_metrics` 报 `measurement requires a current render`，最终是实际的 `AGENT_RUN_FAILED`，不是前端伪造；
 - 当前修复：后端 `/api/agent/events` 和前端 SSE 代理均在响应头后立即 `flushHeaders()`，并设置 `socket.setNoDelay(true)`，避免事件都滞留到任务结束才被 EventSource 一次性消费。
+- 本轮新增根因修复：即使 SSE 即时送达，旧实现仍会把整组工具统一插入最终回答之前；现在由纯投影按真实事件时间穿插。旧实现还在 `resume_render` 后继续调用 finalize，和浏览器测量竞争同一 session lock；现在生产 run 在 render 后进入 `waiting_for_measurement`，测量完成后再由 continuation 决定是否继续。
+- 本轮收口：`resume_finalize` 成功且任务状态为 `accepted` 时立即写入成功终态，避免底层流没有自然关闭造成“工具已完成但会话永远等待”；session 原子写入对 Windows 短暂锁竞争做有限重试，真实持久化错误仍会暴露。
+- 本轮再次收口：同一运行组可能同时包含“暂停阶段”和“恢复阶段”，前端不能用 `some(paused)` 推断最终状态；现在以最后一个 `agent_run_finished` 终态事件为准，`success` 覆盖早先的 `paused/blocked`，避免服务端已 `idle/accepted` 而 UI 仍显示“等待测量”。

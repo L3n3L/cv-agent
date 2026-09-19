@@ -2,6 +2,7 @@ import { contextFields } from './context.js'
 
 export const WORKFLOW_EVENTS = Object.freeze({
   AGENT_RUN_STARTED: 'agent_run_started',
+  AGENT_RUN_PAUSED: 'agent_run_paused',
   AGENT_RUN_FINISHED: 'agent_run_finished',
   ASSISTANT_MESSAGE_STARTED: 'assistant_message_started',
   ASSISTANT_DELTA: 'assistant_delta',
@@ -30,6 +31,7 @@ const RENDER_CONTEXT_FIELDS = Object.freeze(['contentVersion', 'templateRevision
 
 const EVENT_REQUIREMENTS = Object.freeze({
   [WORKFLOW_EVENTS.AGENT_RUN_STARTED]: BASE_CONTEXT_FIELDS,
+  [WORKFLOW_EVENTS.AGENT_RUN_PAUSED]: BASE_CONTEXT_FIELDS,
   [WORKFLOW_EVENTS.AGENT_RUN_FINISHED]: BASE_CONTEXT_FIELDS,
   [WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED]: BASE_CONTEXT_FIELDS,
   [WORKFLOW_EVENTS.ASSISTANT_DELTA]: BASE_CONTEXT_FIELDS,

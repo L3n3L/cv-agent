@@ -75,7 +75,20 @@ export async function writeAtomic(filePath, content) {
   const temporaryPath = path.join(directory, `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`)
   try {
     await fs.writeFile(temporaryPath, content, { encoding: 'utf8', flag: 'wx' })
-    await fs.rename(temporaryPath, filePath)
+    // Windows can briefly keep the destination open while the browser
+    // measurement request and the Agent run persist adjacent session events.
+    // Preserve atomic replacement, but tolerate that short OS-level lock
+    // instead of surfacing a false measurement failure to the user.
+    const retryable = new Set(['EACCES', 'EBUSY', 'EPERM'])
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.rename(temporaryPath, filePath)
+        break
+      } catch (error) {
+        if (!retryable.has(error?.code) || attempt >= 5) throw error
+        await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+      }
+    }
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => {})
   }

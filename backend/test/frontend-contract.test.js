@@ -62,6 +62,7 @@ test('frontend keeps the measured A4 fit when Agent is open on desktop widths', 
   assert.match(app, /function syncPreviewDocumentHeight\(frame\)/)
   assert.match(app, /frame\.dataset\.documentHeight/)
   assert.match(app, /frameWrap\.dataset\.pageCount/)
+  assert.match(app, /payload\.event === 'render_succeeded'[\s\S]*?liveState\.renderId = payload\.renderId[\s\S]*?syncPreviewFrames\(\)/)
 })
 
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {

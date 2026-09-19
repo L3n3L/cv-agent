@@ -1,6 +1,7 @@
 import { createResumeTask, prepareResumeTask } from './workflow.js'
+import { AGENT_EXECUTION_MODES, DEFAULT_AUTO_CONTINUATION_BUDGET } from '../agent/execution-policy.js'
 
-export function createResumeSession({ workspace, resumePath, templateId, templateRevision, targetPages, intakeRequired = false, sessionId = null, sourceHash = null }) {
+export function createResumeSession({ workspace, resumePath, templateId, templateRevision, targetPages, intakeRequired = false, sessionId = null, sourceHash = null, executionMode = AGENT_EXECUTION_MODES.CHAT }) {
   const now = new Date().toISOString()
   const task = prepareResumeTask(createResumeTask({
     workspaceId: workspace.id,
@@ -24,6 +25,12 @@ export function createResumeSession({ workspace, resumePath, templateId, templat
     templateId,
     templateRevision,
     sourceHash,
+    executionMode,
+    automation: {
+      continuationCount: 0,
+      continuationBudget: DEFAULT_AUTO_CONTINUATION_BUDGET,
+      lastContinuationRenderId: null,
+    },
     taskRef: { current: task, presentation: null, presentationRevision: 1 },
     messages: [],
     workflowEvents: [],

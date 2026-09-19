@@ -33,7 +33,7 @@ function safeMessages(messages) {
 
 function safeWorkflowEvent(event) {
   if (!event || typeof event !== 'object') return null
-  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'outcome', 'durationMs', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reasoningSummary', 'delta', 'messageId']
+  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'executionMode', 'continuationRound', 'continuationBudget', 'outcome', 'durationMs', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reasoningSummary', 'delta', 'messageId']
   const value = {}
   for (const key of allowed) {
     if (event[key] !== undefined && event[key] !== null) value[key] = event[key]
@@ -59,6 +59,12 @@ function sessionSnapshot(session) {
     templateId: session.templateId || null,
     templateRevision: session.templateRevision || null,
     sourceHash: session.sourceHash || null,
+    executionMode: session.executionMode || 'chat',
+    automation: {
+      continuationCount: Math.max(0, Number(session.automation?.continuationCount) || 0),
+      continuationBudget: Math.max(0, Number(session.automation?.continuationBudget) || 0),
+      lastContinuationRenderId: session.automation?.lastContinuationRenderId || null,
+    },
     status: session.status || 'idle',
     runState: session.runState || 'idle',
     lastError: session.lastError || null,
@@ -87,6 +93,12 @@ function hydrateSession(snapshot) {
     },
     messages: safeMessages(snapshot.messages),
     workflowEvents: safeWorkflowEvents(snapshot.workflowEvents),
+    executionMode: snapshot.executionMode || 'chat',
+    automation: {
+      continuationCount: Math.max(0, Number(snapshot.automation?.continuationCount) || 0),
+      continuationBudget: Math.max(0, Number(snapshot.automation?.continuationBudget) || 0),
+      lastContinuationRenderId: snapshot.automation?.lastContinuationRenderId || null,
+    },
   }
   if (session.runState === 'running') {
     session.runState = 'interrupted'

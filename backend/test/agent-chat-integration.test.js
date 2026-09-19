@@ -168,9 +168,16 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     assert.equal(blocked.body.state, TASK_STATES.NEEDS_REVISION)
     assert.equal(blocked.body.verification.passed, false)
 
-    const continued = await jsonRequest(`${base}/api/agent/continue`, { sessionId, renderId: run.body.context.renderId })
-    assert.equal(continued.response.status, 200)
-    assert.equal(continued.body.state, TASK_STATES.RENDERED)
+    const deadline = Date.now() + 5000
+    let continuedSession = null
+    while (Date.now() < deadline) {
+      continuedSession = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+      if (continuedSession.session?.status === TASK_STATES.RENDERED && continuedSession.context?.renderId !== run.body.context.renderId) break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.equal(blocked.body.autoContinuation.scheduled, true)
+    assert.equal(continuedSession.session.status, TASK_STATES.RENDERED)
+    const continued = { body: { state: continuedSession.session.status, context: continuedSession.context } }
     assert.notEqual(continued.body.context.renderId, run.body.context.renderId)
 
     const stale = await jsonRequest(`${base}/api/agent/measure`, {
@@ -283,6 +290,54 @@ test('streaming Agent sends ordered answer deltas while keeping reasoning privat
     assert.ok(events.some((event) => event.payload?.event === 'agent_run_started' && event.payload?.reasoningSummary))
     const session = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
     assert.ok(session.session.workflowEvents.every((event) => !String(event.delta || '').includes('private chain of thought')))
+  } finally {
+    await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
+test('production mode resumes automatically after a blocked browser measurement', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-auto-continue-integration-'))
+  const sessionDirectory = path.join(workspaceRoot, 'sessions')
+  const logDirectory = path.join(workspaceRoot, 'logs')
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# 测试候选人\n\n## 教育经历\n\n测试大学\n', 'utf8')
+  const server = createServer({
+    logger: createLogger({ directory: logDirectory, component: 'auto-continue-integration-test' }),
+    sessionDirectory,
+    agentFactory: async (options) => createScriptedResumeAgent(options),
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const bootstrapped = await jsonRequest(`${base}/api/agent/bootstrap`, { workspaceRoot, resumePath: 'resume.md', targetPages: 1 })
+    const sessionId = bootstrapped.body.sessionId
+    const run = await jsonRequest(`${base}/api/agent/run`, { sessionId, workspaceRoot, resumePath: 'resume.md', message: '帮我制作一页投递版简历，不要保存正式版。' })
+    assert.equal(run.response.status, 200)
+    assert.equal(run.body.executionMode, 'production')
+    const measured = await jsonRequest(`${base}/api/agent/measure`, {
+      sessionId,
+      renderId: run.body.context.renderId,
+      pageCount: 1,
+      occupancy: [0.4],
+      overflow: false,
+    })
+    assert.equal(measured.response.status, 200)
+    assert.equal(measured.body.state, 'needs_revision')
+    assert.equal(measured.body.autoContinuation.scheduled, true)
+
+    const deadline = Date.now() + 5000
+    let latest = null
+    while (Date.now() < deadline) {
+      latest = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+      if (latest.session?.context?.renderId !== run.body.context.renderId && latest.session?.status === 'rendered') break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.equal(latest.session.executionMode, 'production')
+    assert.equal(latest.session.status, 'rendered')
+    assert.notEqual(latest.session.taskRef.current.context.renderId, run.body.context.renderId)
+    assert.equal(latest.session.automation.continuationCount, 1)
   } finally {
     await closeServer(server)
     await fs.rm(workspaceRoot, { recursive: true, force: true })

@@ -22,6 +22,8 @@ import { copyWorkspaceTemplate, getWorkspaceTemplateSnapshotIdentity, listWorksp
 import { renderResumeDraft } from './core/render.js'
 import { generateTemplateCandidate } from './migrated/resume-engine/template-generation.js'
 import { runAgentWithStreaming } from './agent/streaming.js'
+import { AGENT_EXECUTION_MODES, classifyAgentExecutionMode, DEFAULT_AUTO_CONTINUATION_BUDGET, isProductionExecutionMode } from './agent/execution-policy.js'
+import { resumeProductionSkillFiles } from './agent/resume-production-skill.js'
 
 const port = Number(process.env.CVAGENT_PORT || 3180)
 const logger = createLogger({ component: 'cvagent-server' })
@@ -143,6 +145,7 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
     ...(event.toolCallId ? { toolCallId: String(event.toolCallId) } : {}),
     ...(event.messageId ? { messageId: String(event.messageId) } : {}),
     ...(event.mode ? { mode: event.mode } : {}),
+    ...(event.executionMode ? { executionMode: event.executionMode } : {}),
     ...(event.outcome ? { outcome: event.outcome } : {}),
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     ...(event.errorCode ? { errorCode: event.errorCode } : {}),
@@ -167,20 +170,22 @@ async function runAgentTurn(session, message, options = {}) {
   const task = taskRef.current
   const runLogger = options.serverLogger.child(contextFields(task.context))
   const mode = options.mode || 'user_message'
+  const executionMode = options.executionMode || session.executionMode || AGENT_EXECUTION_MODES.CHAT
   session.runState = 'running'
   session.status = task.state
   session.lastError = null
-  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, ...contextFields(task.context) })
-  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, resumePath: session.resumePath })
-  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode })
-  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: options.onWorkflowEvent })
-  const agent = await options.agentFactory({ tools, task, taskRef })
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, executionMode, ...contextFields(task.context) })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, executionMode, resumePath: session.resumePath })
+  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: options.onWorkflowEvent })
+  const agent = await options.agentFactory({ tools, task, taskRef, executionMode })
   if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
   const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
+  if (executionMode === AGENT_EXECUTION_MODES.PRODUCTION) input.files = await resumeProductionSkillFiles()
   const streamed = await runAgentWithStreaming(agent, input, {
-    onAssistantStart: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode }),
-    onAssistantDelta: ({ messageId, delta }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode }),
-    onAssistantFinish: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, task: { ...task, sessionId: session.sessionId }, mode }),
+    onAssistantStart: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
+    onAssistantDelta: ({ messageId, delta }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
+    onAssistantFinish: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
   })
   const result = streamed.result
   if (Array.isArray(result?.messages)) session.messages = result.messages
@@ -188,9 +193,9 @@ async function runAgentTurn(session, message, options = {}) {
   session.runState = 'idle'
   session.status = nextTask.state
   session.lastError = null
-  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, ...contextFields(nextTask.context) })
-  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode })
-  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...nextTask, sessionId: session.sessionId }, outcome: 'success', mode })
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, executionMode, ...contextFields(nextTask.context) })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode, executionMode })
+  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...nextTask, sessionId: session.sessionId }, outcome: 'success', mode, executionMode })
   return { result, task: nextTask }
 }
 
@@ -373,7 +378,7 @@ export function createServer(options = {}) {
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/measure') {
-      void handleMeasurement(request, response, { serverLogger: requestLogger, sessions, sessionStore, workflowEvents })
+      void handleMeasurement(request, response, { serverLogger: requestLogger, agentFactory, sessions, sessionStore, workflowEvents })
       return
     }
     if (request.method === 'POST' && request.url === '/api/agent/save') {
@@ -797,14 +802,16 @@ async function handleMeasurement(request, response, options) {
     const sessionId = String(body.sessionId || '').trim()
     session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
     if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
-    return await withSessionLock(session, async () => {
+    const result = await withSessionLock(session, async () => {
       if (String(input.renderId) !== String(session.taskRef.current.context.renderId || '')) throw Object.assign(new Error('measurement renderId is stale'), { code: 'MEASUREMENT_STALE' })
       const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
       const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       const measurement = await handlers.resumeMeasure(input)
       const verification = await handlers.resumeVerify()
-      sendJson(response, 200, { ok: true, sessionId, measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) })
+      return { measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) }
     })
+    const autoContinuation = scheduleMeasurementContinuation(session, input.renderId, result.verification, options)
+    sendJson(response, 200, { ok: true, sessionId, ...result, autoContinuation })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'MEASUREMENT_FAILED'), errorMessage: String(error?.message || error) }
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MEASUREMENT_INVALID', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'TOOL_FAILED'])
@@ -833,7 +840,8 @@ async function handleAgentContinue(request, response, options) {
       if (task.state !== 'needs_revision') throw Object.assign(new Error(`agent continuation requires needs_revision, received ${task.state}`), { code: 'CONTINUATION_NOT_ALLOWED' })
       const blockers = task.blockers.length ? `\n当前阻断项：\n- ${task.blockers.join('\n- ')}` : ''
       const message = String(body.message || `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据最终验收结果继续修订当前简历，重新检查、渲染，并等待下一次真实测量。${blockers}`).trim()
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+      session.executionMode = AGENT_EXECUTION_MODES.PRODUCTION
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
       sendJson(response, 200, { ok: true, continued: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
     })
@@ -877,14 +885,20 @@ async function handleAgentRun(request, response, options) {
       session = createResumeSession({ workspace, resumePath, templateId: template.id, templateRevision, targetPages: body.targetPages, sessionId, sourceHash })
       options.sessions.set(sessionId, session)
     }
+    const executionMode = classifyAgentExecutionMode(message)
+    session.executionMode = executionMode
+    if (isProductionExecutionMode(executionMode)) {
+      session.automation = { continuationCount: 0, continuationBudget: session.automation?.continuationBudget || DEFAULT_AUTO_CONTINUATION_BUDGET, lastContinuationRenderId: null }
+    }
+    await persistSession(options.sessionStore, session)
     const execute = () => withSessionLock(session, async () => {
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
-      return { sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
+      return { sessionId, executionMode, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
     })
     const streamRequested = new URL(request.url, 'http://127.0.0.1').searchParams.get('stream') === '1'
     if (streamRequested) {
-      sendJson(response, 202, { ok: true, accepted: true, sessionId, state: session.taskRef.current?.state || session.status, runState: 'running' })
+      sendJson(response, 202, { ok: true, accepted: true, sessionId, executionMode, state: session.taskRef.current?.state || session.status, runState: 'running' })
       void execute().catch((error) => recordAgentRunFailure(session, error, options).catch(() => {}))
       return
     }
@@ -900,6 +914,29 @@ async function handleAgentRun(request, response, options) {
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MESSAGE_REQUIRED', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'SESSION_INVALID', 'SESSION_SCOPE_MISMATCH', 'SOURCE_CHANGED'])
     sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
   }
+}
+
+function scheduleMeasurementContinuation(session, renderId, verification, options) {
+  const task = session?.taskRef?.current
+  const automation = session.automation || (session.automation = { continuationCount: 0, continuationBudget: DEFAULT_AUTO_CONTINUATION_BUDGET, lastContinuationRenderId: null })
+  const budget = Math.max(0, Number(automation.continuationBudget) || DEFAULT_AUTO_CONTINUATION_BUDGET)
+  if (!isProductionExecutionMode(session.executionMode) || verification?.state !== 'needs_revision' || verification?.blockers?.includes('尚未完成首次信息收集')) return { scheduled: false, budget, round: automation.continuationCount }
+  if (automation.lastContinuationRenderId === renderId) return { scheduled: false, duplicate: true, budget, round: automation.continuationCount }
+  if (automation.continuationCount >= budget) return { scheduled: false, exhausted: true, budget, round: automation.continuationCount }
+  automation.continuationCount += 1
+  automation.lastContinuationRenderId = String(renderId)
+  const round = automation.continuationCount
+  void persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, mode: 'measurement_continuation_scheduled', executionMode: session.executionMode, continuationRound: round, continuationBudget: budget, state: task?.state, ...contextFields(task?.context) }).catch(() => {})
+  setTimeout(() => {
+    void withSessionLock(session, async () => {
+      const current = session.taskRef.current
+      if (current.state !== 'needs_revision' || String(current.context.renderId || '') !== String(renderId)) return
+      const blockers = current.blockers.length ? `\n当前阻断项：\n- ${current.blockers.join('\n- ')}` : ''
+      const message = `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据当前验收结果继续修订，不要询问用户确认；重新检查、渲染，并等待下一次真实测量。${blockers}`
+      await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+    }).catch((error) => recordAgentRunFailure(session, error, { ...options, workflowEvents: options.workflowEvents }, 'measurement_continuation').catch(() => {}))
+  }, 0)
+  return { scheduled: true, budget, round }
 }
 
 async function handlePreview(request, response, options) {

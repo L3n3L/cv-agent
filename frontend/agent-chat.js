@@ -261,7 +261,11 @@
       }
       byKey.get(key).events.push(event)
     }
-    return groups
+    // Ordinary chat and read-only answers can complete without any tool call.
+    // Do not render an empty "preparing tools" card for those turns; a tool
+    // timeline is useful only when it contains an actual tool lifecycle.
+    const isToolEvent = (event) => ['tool_call_started', 'tool_call_succeeded', 'tool_call_failed'].includes(event.event)
+    return groups.filter((group) => group.events.some(isToolEvent))
   }
 
   function formatSummaryValue(key, value) {
@@ -389,15 +393,7 @@
 
   function renderTimeline({ messages, events, sessionReady, activeRun = false, streamingAssistantText = '', error = '' }) {
     const groups = eventGroups(events)
-    const latestStatus = groups.length ? eventStatus(groups.at(-1).events) : 'idle'
-    const displayGroups = groups.slice()
-    if (activeRun && latestStatus !== 'running') {
-      displayGroups.push({
-        key: 'active-run',
-        events: [{ event: 'agent_run_started', runId: 'active-run', timestamp: new Date().toISOString() }],
-      })
-    }
-    const content = renderInterleavedTimeline(messages, displayGroups, { openLatest: true })
+    const content = renderInterleavedTimeline(messages, groups, { openLatest: true })
     const streaming = renderStreamingState(streamingAssistantText)
     if (streaming) content.push(streaming)
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)

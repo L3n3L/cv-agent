@@ -127,6 +127,17 @@ function connectWorkflowEvents() {
       liveState.streamingAssistantText += String(payload.delta || '')
       liveState.agentRunActive = true
     }
+    if (payload.event === 'render_succeeded' && payload.renderId && payload.renderId !== liveState.renderId) {
+      // The Agent may emit a fresh render before its turn finishes. Switch the
+      // browser identity immediately so the old iframe cannot post metrics for
+      // a render that the workflow has already invalidated.
+      liveState.renderId = payload.renderId
+      liveState.measurement = null
+      liveState.measuredRenderKey = ''
+      liveState.workflowState = payload.state || 'rendered'
+      syncPreviewFrames()
+      updateHeader()
+    }
     if (payload.event === 'agent_run_finished') {
       liveState.agentRunActive = false
       if (payload.outcome === 'failed') liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
@@ -222,7 +233,9 @@ function measurePreviewFrame(frame, identity = {}) {
         void loadSessionsForWorkspace()
         const requiresInitialIntake = blockers.includes('尚未完成首次信息收集')
         if (requiresInitialIntake) showToast('请打开 Agent，补充基本信息后继续制作')
-        if (body.state === 'needs_revision' && !requiresInitialIntake) showToast('真实 A4 测量已回传；请确认后再让 Agent 继续调整')
+        if (body.autoContinuation?.scheduled) showToast(`真实 A4 测量已回传，Agent 正在继续调整（第 ${body.autoContinuation.round} 轮）`)
+        if (body.autoContinuation?.exhausted) showToast('自动修订预算已用完，请在 Agent 中继续说明调整方向')
+        if (body.state === 'needs_revision' && !requiresInitialIntake && !body.autoContinuation?.scheduled && !body.autoContinuation?.exhausted) showToast('真实 A4 测量未通过，请进入制作模式继续调整')
       })
       .catch((error) => {
         if (frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId) showToast(`预览测量失败：${errorText(error)}`)

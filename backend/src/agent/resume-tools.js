@@ -287,7 +287,7 @@ export function createResumeToolHandlers(options = {}) {
 
 export function createResumeTools(options = {}) {
   const handlers = createResumeToolHandlers(options)
-  return [
+  const tools = [
     tool(async () => handlers.workspaceInfo(), { name: 'workspace_info', description: 'Read the current authorized workspace identity and resume path. This is read-only.', schema: z.object({}) }),
     tool(async () => handlers.resumePrepare(), { name: 'resume_prepare', description: 'Prepare the current resume session. Bind the source baseline and target page count before reading or mutating content.', schema: z.object({}) }),
     tool(async (input) => handlers.workspaceMaterials(input), { name: 'workspace_materials_list', description: 'List readable text materials in the authorized workspace. Use this before selecting evidence; hidden metadata and drafts are excluded.', schema: listSchema }),
@@ -314,6 +314,14 @@ export function createResumeTools(options = {}) {
     tool(async (input) => handlers.resumeSaveVersion(input), { name: 'resume_save_version', description: 'Save an accepted isolated draft as an immutable formal version. Requires explicit user confirmation and can index the target role, company, and workspace-relative JD path.', schema: versionSaveSchema }),
     ...(options.includeMeasurementTool ? [tool(async (input) => handlers.resumeMeasure(input), { name: 'resume_metrics', description: 'Record browser measurements for the exact current render. Only the product measurement callback should call this; the model must not invent metrics.', schema: measureSchema })] : []),
   ]
+  if (options.executionMode !== 'read_only') return tools
+  const readOnlyTools = new Set([
+    'workspace_info', 'workspace_materials_list', 'workspace_material_read',
+    'resume_production_guide', 'resume_prepare', 'resume_read', 'resume_check',
+    'template_list', 'template_family_list', 'template_versions', 'icon_list',
+    'layout_validate',
+  ])
+  return tools.filter((candidate) => readOnlyTools.has(candidate.name))
 }
 
 export { measureSchema }

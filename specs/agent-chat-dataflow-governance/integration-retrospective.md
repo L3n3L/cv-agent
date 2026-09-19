@@ -472,7 +472,7 @@ t5 工具 B 调用 / 结果
 t6 Agent 最终回复
 ```
 
-工具过程在视觉上可以收纳成一个折叠块，但折叠只是展示压缩，不是时间顺序重排。折叠块内部仍必须保留真实 `sequence`；如果阶段性 Agent 文本和工具调用交错发生，展开后也必须按真实顺序呈现。
+连续的工具阶段在视觉上可以收纳成折叠块，但这不是“每个用户回合最多一个工具块”的规则。只要有真实的阶段性 Agent 文本把两个工具阶段隔开，就允许出现多个折叠块；如果中间只有空的 `assistant_message_started/finished` 生命周期事件，不能因此制造空白块或额外间距。折叠只是展示压缩，不是时间顺序重排。折叠块内部仍必须保留真实 `sequence`；如果阶段性 Agent 文本和工具调用交错发生，展开后也必须按真实顺序呈现。
 
 这意味着 renderer 必须先按 turnId 归并消息和工具轨迹，再把工具轨迹作为该 turn 内的可折叠过程块渲染，不能把 workflow group 直接当成聊天消息插入主时间线。
 
@@ -584,6 +584,22 @@ Agent 回合时间线
 - AI UX Playground, [Task queue pattern](https://www.aiuxplayground.com/pattern/task-queue/)
 - Jacar, [UI design for agents: principles we're starting to understand](https://jacar.es/en/ui-design-for-agents-principles-were-starting-to-understand/)
 
+### 17.7 设计出处审计与执行门槛（2026-09-19）
+
+本节把本复盘文档中的产品设计判断和协议判断拆开。以后新增任何聊天 UI 设计，必须先补齐“参考产品/官方来源、具体状态、采用或拒绝的范围、浏览器验收方式”；只有内部自定义且没有出处的视觉或交互规则，不得直接进入实现。
+
+| 设计点 | 明确出处 | 本项目采用范围 | 不应误称为出处的内容 |
+| --- | --- | --- | --- |
+| 用户消息、Agent 文本、工具调用共用一条可恢复时间线 | OpenAI Codex Harness：typed items、item lifecycle、thread history/reconnect；[Unlocking the Codex harness](https://openai.com/index/unlocking-the-codex-harness/) | 以 `turnId/runId/sequence` 归并并按事件顺序回放 | “把数组里已有文字重新排序”不是协议依据 |
+| 一个用户回合可以有多次工具调用，最后以 Agent 结果收口 | OpenAI Codex Agent Loop；[Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/) | 同一 `turnId` 可以包含多个 `runId` 和多个工具阶段 | “每回合最多一个工具折叠块”没有出处，已撤回 |
+| 工具细节默认不抢占主阅读流，用户按需展开 | Codex UI 的真实验收截图（用户提供，作为视觉参考）+ Codex Harness 的结构化 item 生命周期 | 连续工具阶段默认折叠；展开保留名称、耗时、状态、错误和真实顺序 | 官方文章没有规定 CVAgent 必须使用某个 CSS 或固定卡片样式 |
+| 运行中用低对比度动效，完成后保持稳定摘要 | Codex UI 的真实验收截图（用户提供，作为视觉参考） | 仅作为运行态表现，终态仍由服务端事件决定 | 动效本身不能证明任务成功，也不能代替 `agent_run_finished` |
+| Agent 线程、事件、重连和客户端恢复 | OpenAI Codex Harness；[Unlocking the Codex harness](https://openai.com/index/unlocking-the-codex-harness/) | snapshot + replay + live event 归约与幂等 | 不复制 Codex 私有实现，只对齐可观察的生命周期原则 |
+| 队列、检查点、侧边任务状态 | Cursor Agent 官方文档；[Cursor Agent overview](https://cursor.com/docs/agent/overview) | 仅用于后续队列/检查点能力的参考 | Cursor 的布局细节不自动成为 CVAgent 规范 |
+| 调试追踪与聊天展示分离 | OpenAI Agents SDK Tracing；[Tracing](https://openai.github.io/openai-agents-js/guides/tracing/)、LangGraph Studio；[LangGraph Studio](https://github.com/langchain-ai/langgraphjs/blob/main/docs/docs/concepts/langgraph_studio.md) | 诊断日志和 trace 供开发者查问题，聊天只显示低噪声过程摘要 | 不把 trace/span 列表原样铺进用户聊天 |
+
+因此，本轮的硬性修正是：**不再以固定块数量约束 renderer，而以真实事件边界约束 renderer。** 空 assistant 生命周期事件只能更新状态，不能切断连续工具组；有实际可读的阶段性 Agent 文本时，才允许在其前后形成不同的工具组。这个规则有 Codex 的事件生命周期依据，也直接对应当前截图中“多个空工具过程块”的实际缺陷。
+
 ## 18. 本轮落地记录与验收结果（2026-09-19）
 
 ### 18.1 已落地的代码边界
@@ -608,13 +624,22 @@ Agent 回合时间线
 
 ### 18.3 验收证据
 
-- Backend：`npm.cmd test`，72/72 通过。
+- Backend：`npm.cmd test`，74/74 通过。
 - Frontend：`npm.cmd run build`，TypeScript 检查和 Vite build 均通过。
-- 浏览器：真实打开 Agent、发送一条消息、确认用户消息立即入列、失败终态可见；刷新后两条用户消息和失败提示仍按时间顺序恢复，输入框保持可用。
+- 浏览器：真实打开 Agent 并检查最新构建；现有 session 中只保留一个有内容的工作流块，不再出现孤立“正在处理”块，工具组默认折叠，输入框保持可用。
 - 当前浏览器模型调用未使用真实 API key，因此本轮浏览器没有宣称“真实模型成功执行”通过；暂停、测量、自动 continuation、完整工具链由后端集成测试覆盖。
 - 开发期旧 session 已按授权清空，仅保留工作区源文件、模板、渲染产物和日志；本轮浏览器回归产生的当前开发 session 属于临时验收数据。
 
-### 18.4 仍未关闭的验收项
+### 18.4 本轮针对截图问题的修正
+
+- `renderRunGroup()` 不再把空的 `assistant_message_started/finished` 当作工具阶段边界；只有实际可见的 Agent 文本才会切断连续工具组。
+- `eventGroups()` 不再为“只有空 assistant 生命周期、没有工具、没有 delta”的普通对话创建 workflow group，因此不会再渲染孤立的“正在处理”。
+- 工具块垂直留白从大段卡片间距收敛为轻量状态行；滚动条继续采用接近不可见的默认样式，运行中的状态只保留低对比度渐变提示。
+- 新增两个前端回归用例：空 assistant 生命周期不拆分工具组；assistant-only 空生命周期不进入可见聊天时间线。
+
+本轮通过浏览器 DOM 和截图复核得到的结构是：用户消息 → 一个连续工具过程（默认收起）→ Agent 正文；没有无内容的“正在处理”占位。若后端后续真的产生阶段性 Agent 文本，允许按真实 `sequence` 分出多个工具组；这不是固定数量规则。
+
+### 18.5 仍未关闭的验收项
 
 - 需要在配置有效模型凭据的环境再次完成一次浏览器真实成功链路：用户消息 → 多个工具 → 暂停测量 → 自动 continuation → 最终 assistant 回复 → 刷新恢复。
 - 需要单独模拟浏览器断网/重连，检查 `Last-Event-ID` 在真实 Chromium EventSource 行为下没有重复或缺口。

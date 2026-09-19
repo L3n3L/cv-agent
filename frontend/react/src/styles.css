@@ -282,7 +282,7 @@ body { letter-spacing:-.005em; }
 .assistant-drawer .assistant-context span { color:#69727c; font-size:10px; font-weight:500; }
 .assistant-drawer #assistantContent { height:calc(100% - 68px); min-height:0; }
 .assistant-drawer .chat-layout { display:flex; height:100%; min-height:0; flex-direction:column; }
-.assistant-drawer .chat-stream { width:100%; min-height:0; flex:1; align-self:stretch; overflow:auto; padding:18px 2px 12px; scrollbar-color:#d7dade transparent; }
+.assistant-drawer .chat-stream { width:100%; min-height:0; flex:1; align-self:stretch; overflow:auto; padding:14px 2px 10px; scrollbar-color:transparent transparent; }
 .assistant-drawer .message { display:block; margin:0 0 22px; }
 .assistant-drawer .message-meta { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; color:#7b838c; font:10px "IBM Plex Mono",monospace; }
 .assistant-drawer .message-meta time { color:#a0a6ad; font-size:9px; }
@@ -310,10 +310,10 @@ body { letter-spacing:-.005em; }
 .assistant-drawer .chat-empty { padding:34px 2px 10px; color:#727b84; font-size:11px; line-height:1.7; }
 .assistant-drawer .chat-empty strong { display:block; margin-bottom:5px; color:#30363c; font-size:13px; font-weight:600; }
 .assistant-drawer .chat-empty p { margin:0; }
-.assistant-drawer .tool-group { margin:22px 0 22px; padding:7px 0 7px 12px; border-left:1px solid #dfe2e5; }
+.assistant-drawer .tool-group { margin:8px 0 10px; padding:3px 0 3px 10px; border-left:1px solid #e6e8eb; }
 .assistant-drawer .tool-group > summary { list-style:none; cursor:pointer; }
 .assistant-drawer .tool-group > summary::-webkit-details-marker { display:none; }
-.assistant-drawer .tool-group .run-label { display:flex; min-height:20px; align-items:center; justify-content:space-between; gap:8px; margin-bottom:3px; }
+.assistant-drawer .tool-group .run-label { display:flex; min-height:20px; align-items:center; justify-content:space-between; gap:8px; margin-bottom:1px; }
 .assistant-drawer .tool-group .run-label b { color:#747d86; font:10px "IBM Plex Mono",monospace; font-weight:500; }
 .assistant-drawer .tool-group .run-label span { color:#9aa1a8; font:9px "IBM Plex Mono",monospace; }
 .assistant-drawer .tool-group .run-label::after { width:28px; margin-left:auto; color:transparent; content:"⌄"; font-size:9px; text-align:right; }

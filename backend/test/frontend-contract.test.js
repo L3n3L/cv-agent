@@ -122,6 +122,58 @@ test('Agent chat keeps paused and resumed phases in one run timeline', async () 
   assert.match(html, /已完成检查/)
 })
 
+test('Agent chat does not split tools on empty assistant lifecycle events', async () => {
+  const chatSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat.js'), 'utf8')
+  const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
+  const context = vm.createContext({ window: {}, console })
+  vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  const html = context.window.cvAgentChat.renderTimeline({
+    messages: [{ role: 'user', content: '检查简历', turnId: 'turn-1' }],
+    events: [
+      { sequence: 1, event: 'agent_run_started', runId: 'run-1', turnId: 'turn-1' },
+      { sequence: 2, event: 'tool_call_started', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'resume_read' },
+      { sequence: 3, event: 'tool_call_succeeded', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'resume_read', durationMs: 10 },
+      { sequence: 4, event: 'assistant_message_started', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-1' },
+      { sequence: 5, event: 'assistant_message_finished', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-1' },
+      { sequence: 6, event: 'tool_call_started', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-2', toolName: 'resume_check' },
+      { sequence: 7, event: 'tool_call_succeeded', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-2', toolName: 'resume_check', durationMs: 12 },
+      { sequence: 8, event: 'assistant_message_started', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-2' },
+      { sequence: 9, event: 'assistant_delta', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-2', delta: '检查完成' },
+      { sequence: 10, event: 'assistant_message_finished', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-2' },
+      { sequence: 11, event: 'agent_run_finished', runId: 'run-1', turnId: 'turn-1', outcome: 'success' },
+    ],
+    sessionReady: true,
+  })
+  assert.equal((html.match(/<details class="tool-group run-trace done">/g) || []).length, 1)
+  assert.equal((html.match(/aria-label="Agent 工作流"/g) || []).length, 1)
+  assert.equal((html.match(/读取当前简历/g) || []).length, 1)
+  assert.equal((html.match(/检查简历内容/g) || []).length, 1)
+  assert.match(html, /检查完成/)
+  assert.doesNotMatch(html, /正在处理/)
+})
+
+test('Agent chat omits an assistant-only lifecycle with no visible text', async () => {
+  const chatSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat.js'), 'utf8')
+  const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
+  const context = vm.createContext({ window: {}, console })
+  vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  const html = context.window.cvAgentChat.renderTimeline({
+    messages: [{ role: 'user', content: '你好' }, { role: 'assistant', content: '你好，我是 CVAgent。' }],
+    events: [
+      { sequence: 1, event: 'agent_run_started', runId: 'run-1' },
+      { sequence: 2, event: 'assistant_message_started', runId: 'run-1', messageId: 'assistant-1' },
+      { sequence: 3, event: 'assistant_message_finished', runId: 'run-1', messageId: 'assistant-1', assistantChars: 0 },
+      { sequence: 4, event: 'agent_run_finished', runId: 'run-1', outcome: 'success' },
+    ],
+    sessionReady: true,
+  })
+  assert.doesNotMatch(html, /aria-label="Agent 工作流"/)
+  assert.doesNotMatch(html, /正在处理/)
+  assert.match(html, /你好，我是 CVAgent。/)
+})
+
 test('React/Vite shell owns the DOM contract and bundled runtime boundary', async () => {
   const reactRoot = path.join(frontendRoot, 'react')
   const packageJson = JSON.parse(await fs.readFile(path.join(reactRoot, 'package.json'), 'utf8'))

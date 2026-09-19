@@ -281,7 +281,12 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
     // Do not render an empty "preparing tools" card for those turns; a tool
     // timeline is useful only when it contains an actual tool lifecycle.
     const isToolEvent = (event) => ['tool_call_started', 'tool_call_succeeded', 'tool_call_failed'].includes(event.event)
-    return groups.filter((group) => group.events.some((event) => isToolEvent(event) || event.event === 'assistant_message_started' || event.event === 'assistant_delta'))
+    const isVisibleAssistantEvent = (event) => event.event === 'assistant_delta' && String(event.delta || '').trim()
+    // A message lifecycle can be opened and closed without producing any
+    // user-visible text (for example, the model answers through the snapshot
+    // path). That lifecycle is already represented by the message snapshot;
+    // keeping it here would create an orphan "正在处理" block.
+    return groups.filter((group) => group.events.some((event) => isToolEvent(event) || isVisibleAssistantEvent(event)))
   }
 
   function formatSummaryValue(key, value) {
@@ -342,6 +347,11 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
         toolEntries.push(entry)
         return
       }
+      // DeepAgent emits assistant lifecycle boundaries even when no user-visible
+      // text was produced. They are state facts, not visual separators. Do not
+      // flush a tool group for an empty lifecycle row or one run becomes a
+      // stack of blank "工具过程" blocks.
+      if (!String(entry.text || '').trim()) return
       flushTools()
       rows.push(renderAssistantEntry(entry, activeRun))
     })

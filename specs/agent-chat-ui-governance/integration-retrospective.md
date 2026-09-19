@@ -158,6 +158,20 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 - 连接中断显示为连接问题，不冒充 Agent 回复；
 - 页面刷新后恢复已持久化的消息和工具事件，仍在运行的 run 通过 session 状态恢复为可诊断状态。
 
+### 4.4 设计出处审计（2026-09-19）
+
+本文件中的 UI 规则必须有可核验出处，不能把本项目临时的视觉偏好写成“行业标准”。审计结果如下：
+
+| UI 规则 | 参考产品/官方资料 | 采用结论 |
+| --- | --- | --- |
+| 低噪声的 Agent 主阅读流，工具过程按需查看 | OpenAI Codex UI 真实验收截图（用户提供）；[Codex Harness](https://openai.com/index/unlocking-the-codex-harness/) 的结构化 item 生命周期 | 采用；工具过程默认折叠，不用重复大卡片打断正文 |
+| 用户、Agent、工具事件按真实顺序呈现 | OpenAI [Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/) 与 [Unlocking the Codex harness](https://openai.com/index/unlocking-the-codex-harness/) | 采用；按 `sequence` 回放，不按消息类型重排 |
+| 运行中有轻量状态提示，完成后回到稳定状态 | Codex UI 真实验收截图（用户提供） | 采用为视觉表现；成功必须由真实终态事件确认 |
+| 长任务和恢复能力有独立的任务/检查点语义 | Cursor [Agent overview](https://cursor.com/docs/agent/overview) | 作为后续能力参考，不把 Cursor 的布局照搬进当前 UI |
+| 详细 trace 供调试，不直接当用户聊天 | OpenAI Agents SDK [Tracing](https://openai.github.io/openai-agents-js/guides/tracing/)、LangGraph [Studio](https://github.com/langchain-ai/langgraphjs/blob/main/docs/docs/concepts/langgraph_studio.md) | 采用分层原则；用户区不显示原始 span/内部 prompt |
+
+明确撤回一条没有出处的规则：**“每个用户回合最多一个工具折叠块”不是 Codex、Cursor 或 SDK 的公开设计规范。** 正确规则是一个连续时间线内按真实事件分组：空的 assistant 生命周期事件不产生可见分组；被真实阶段性 Agent 文本隔开的工具阶段可以有多个折叠组。后续任何没有参考产品名称、官方链接或用户提供截图依据的 UI 设计点，都必须先补充出处审计，再进入代码。
+
 ## 5. 代码整理方案
 
 ### 阶段 A：先收敛状态边界

@@ -59,6 +59,25 @@ test('agent chat state marks a workflow group as the source of assistant text af
   assert.equal(workflowGroupHasAssistantText({ events: [{ event: 'tool_call_succeeded' }] }), false)
 })
 
+test('agent chat state prefers the persisted final answer when streaming changes Markdown formatting', () => {
+  const timeline = reduceAgentTimeline({
+    messages: [
+      { role: 'user', content: '检查简历', turnId: 'turn-1', messageId: 'user-1', sequence: 1 },
+      { role: 'assistant', content: '第一段结果。\n\n| 项目 | 结果 |\n|---|---|\n| 姓名 | ✅ 通过 |', turnId: 'turn-1', messageId: 'persisted-assistant-1', sequence: 6 },
+    ],
+    events: [
+      { event: 'agent_run_started', turnId: 'turn-1', runId: 'run-1', sequence: 2 },
+      { event: 'assistant_message_started', turnId: 'turn-1', runId: 'run-1', messageId: 'stream-assistant-1', sequence: 3 },
+      { event: 'assistant_delta', turnId: 'turn-1', runId: 'run-1', messageId: 'stream-assistant-1', delta: '第一段结果。 | 项目 | 结果 ||---|---|| 姓名 | ✅ 通过 |', sequence: 4 },
+      { event: 'assistant_message_finished', turnId: 'turn-1', runId: 'run-1', messageId: 'stream-assistant-1', sequence: 5 },
+    ],
+  })
+  assert.equal(timeline.length, 1)
+  assert.equal(timeline[0].messages.filter((message) => message.role === 'assistant').length, 1)
+  assert.equal(timeline[0].messages.find((message) => message.role === 'assistant').content.includes('| 项目 | 结果 |'), true)
+  assert.equal(projectWorkflowTimeline(timeline[0].workflow.events).filter((entry) => entry.kind === 'assistant').length, 0)
+})
+
 test('agent chat state ignores stale run events', () => {
   assert.equal(isSameAgentRun({ runId: 'run-current' }, 'run-current'), true)
   assert.equal(isSameAgentRun({ runId: 'run-old' }, 'run-current'), false)

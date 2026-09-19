@@ -19,6 +19,7 @@ import { validateLayoutSpec } from '../migrated/resume-engine/layout-schema.js'
 import { CVAGENT_RESUME_PRODUCTION_CONTRACT } from './resume-production-contract.js'
 import { suggestPresentationAdjustment } from './presentation-suggestion.js'
 import { autoTunePresentation } from './presentation-autotune.js'
+import { getCanonicalNextAction, inspectToolCall } from '../core/workflow-coordinator.js'
 
 export function createResumeToolHandlers(options = {}) {
   if (!options.workspaceRoot || !options.resumePath || !options.taskRef) throw new Error('workspaceRoot, resumePath and taskRef are required')
@@ -43,7 +44,8 @@ export function createResumeToolHandlers(options = {}) {
         const currentHash = contentHash(source.content)
         if (!draftAvailable && options.sourceHash && options.sourceHash !== currentHash) throw Object.assign(new Error('source resume changed outside this session; prepare a new session before continuing'), { code: 'SOURCE_CHANGED' })
         const preflight = resumeQualityCheck(source.content, { targetPages: taskRef.current.targetPages })
-        const recoveryTool = draftAvailable && ['blocked', 'needs_revision'].includes(task.state) ? 'resume_reopen_draft' : null
+        const nextAction = getCanonicalNextAction(task, { draftAvailable })
+        const recoveryTool = nextAction.tool === 'resume_reopen_draft' ? nextAction.tool : null
         return {
           prepared: true,
           workspaceRoot: options.workspaceRoot,
@@ -55,7 +57,8 @@ export function createResumeToolHandlers(options = {}) {
           draftAvailable,
           preflight,
           completionAllowed: false,
-          nextTool: recoveryTool || (task.context.contentVersion ? 'resume_check' : 'resume_read'),
+          nextTool: nextAction.tool,
+          nextAction: nextAction.reason,
           recoveryTool,
         }
       }, {
@@ -104,7 +107,10 @@ export function createResumeToolHandlers(options = {}) {
           pathValue = draft.draftRelativePath
         }
         const result = resumeQualityCheck(content, { targetPages: input.targetPages || taskRef.current.targetPages || 1 })
-        return { path: pathValue, ...result, completionAllowed: false, nextTool: 'resume_render' }
+        const nextAction = taskRef.current.context.contentVersion
+          ? { tool: 'resume_render', reason: '内容检查完成，继续渲染当前草稿。' }
+          : getCanonicalNextAction(taskRef.current, { draftAvailable: false })
+        return { path: pathValue, ...result, completionAllowed: false, nextTool: nextAction.tool, nextAction: nextAction.reason }
       }, { resultSummary: (result) => ({ path: result.path, passed: result.passed, score: result.score, warningCount: result.warnings.length }) })
     },
     async iconList(input = {}) {
@@ -237,15 +243,19 @@ export function createResumeToolHandlers(options = {}) {
       const templateId = taskRef.current.context.templateId || options.templateId || 'campus-standard'
       const renderTemplateRevision = taskRef.current.context.templateRevision || options.templateRevision || `${templateId}@1`
       return run('resume_render', async () => {
-        if (taskRef.current.state !== 'drafting' || !taskRef.current.context.contentVersion) {
-          const draftAvailable = Boolean(taskRef.current.context.contentVersion && taskRef.draftRelativePath)
+        const draftAvailable = Boolean(taskRef.current.context.contentVersion && taskRef.draftRelativePath)
+        const guard = inspectToolCall(taskRef.current, 'resume_render', { draftAvailable })
+        if (guard.intervention === 'resume_reopen_draft') {
+          taskRef.current = reopenResumeDraft(taskRef.current)
+        }
+        if (!guard.allowed) {
           throw Object.assign(new Error('a current draft is required before rendering'), {
-            code: 'DRAFT_REQUIRED',
-            failureClass: 'requires_transition',
+            code: guard.code || 'DRAFT_REQUIRED',
+            failureClass: guard.failureClass || 'requires_transition',
             details: {
-              currentState: taskRef.current.state,
+              currentState: guard.currentState || taskRef.current.state,
               draftAvailable,
-              recoveryTool: draftAvailable ? 'resume_reopen_draft' : 'resume_write',
+              recoveryTool: guard.nextTool || 'resume_write',
             },
           })
         }
@@ -287,11 +297,15 @@ export function createResumeToolHandlers(options = {}) {
       return run('resume_finalize', async () => {
         const result = verifyResumeTask(taskRef.current)
         taskRef.current = result.task || taskRef.current
+        const nextAction = result.passed
+          ? { tool: 'user_confirmation', reason: '验收通过，等待用户确认保存正式版本。' }
+          : getCanonicalNextAction(taskRef.current, { draftAvailable: Boolean(taskRef.draftRelativePath) })
         return {
           ...result,
           ...contextFields(taskRef.current.context),
           completionAllowed: result.passed === true,
-          nextTool: result.passed ? 'user_confirmation' : taskRef.current.state === 'rendered' ? 'resume_metrics' : 'resume_render',
+          nextTool: nextAction.tool,
+          nextAction: nextAction.reason,
         }
       }, {
         resultSummary: (result) => ({ passed: result.passed, state: result.state, blockerCount: result.blockers.length }),

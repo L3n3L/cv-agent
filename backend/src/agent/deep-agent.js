@@ -4,6 +4,7 @@ import { CVAGENT_SYSTEM_PROMPT } from './system-prompt.js'
 import { createExecutionModeMiddleware } from './execution-mode-middleware.js'
 import { AGENT_EXECUTION_MODES, executionModeInstruction } from './execution-policy.js'
 import { RESUME_PRODUCTION_SKILL_SOURCE } from './resume-production-skill.js'
+import { createWorkflowGuardMiddleware } from './workflow-guard-middleware.js'
 
 /**
  * The only framework-specific boundary in the product. Domain tools remain
@@ -15,6 +16,7 @@ export function createResumeAgent(options = {}) {
   const skillEnabled = executionMode !== AGENT_EXECUTION_MODES.READ_ONLY
   const middleware = [
     ...(executionMode === AGENT_EXECUTION_MODES.PRODUCTION ? [todoListMiddleware()] : []),
+    ...(options.taskRef ? [createWorkflowGuardMiddleware(options.workflowGuard || { taskRef: options.taskRef })] : []),
     createExecutionModeMiddleware(executionMode),
   ]
   return createDeepAgent({

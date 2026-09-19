@@ -62,6 +62,10 @@ function chatMessageContent(message) {
   return ''
 }
 
+function normalizedChatContent(message) {
+  return chatMessageContent(message).replace(/\s+/g, ' ').trim()
+}
+
 function messageSequenceValue(value) {
   if (value === null || value === undefined || value === '') return null
   const parsed = Number(value)
@@ -88,17 +92,28 @@ function messageIdentity(message, index = 0) {
 function mergeMessageSnapshots(baseMessages, outputMessages) {
   const merged = (Array.isArray(baseMessages) ? baseMessages : []).map((message) => ({ ...message }))
   const indexes = new Map()
+  const contentIndexes = new Map()
   merged.forEach((message, index) => indexes.set(messageIdentity(message, index), index))
+  merged.forEach((message, index) => {
+    const content = normalizedChatContent(message)
+    if (content) contentIndexes.set(`${chatMessageRole(message)}:${String(message.turnId || '')}:${content}`, index)
+  })
   ;(Array.isArray(outputMessages) ? outputMessages : []).forEach((message, index) => {
     const identity = messageIdentity(message, index)
-    const existingIndex = indexes.get(identity)
+    const content = normalizedChatContent(message)
+    const contentIdentity = content ? `${chatMessageRole(message)}:${String(message.turnId || '')}:${content}` : ''
+    const existingIndex = indexes.get(identity) ?? (contentIdentity ? contentIndexes.get(contentIdentity) : undefined)
     if (existingIndex === undefined) {
       indexes.set(identity, merged.length)
+      if (contentIdentity) contentIndexes.set(contentIdentity, merged.length)
       merged.push(message)
       return
     }
     const existing = merged[existingIndex]
-    if (chatMessageRole(message) === 'assistant' && chatMessageContent(message).length > chatMessageContent(existing).length) merged[existingIndex] = { ...existing, ...message }
+    if (chatMessageRole(message) === 'assistant' && chatMessageContent(message).length > chatMessageContent(existing).length) {
+      merged[existingIndex] = { ...existing, ...message }
+      if (contentIdentity) contentIndexes.set(contentIdentity, existingIndex)
+    }
   })
   return merged
 }
@@ -130,11 +145,21 @@ function captureAgentMessages(session, result, { persistUserMessage, transientMe
       timestamp: message.timestamp || new Date().toISOString(),
       sequence: messageSequenceValue(message.sequence) ?? ++messageSequence,
     }
+  }).filter((message, index) => {
+    const role = chatMessageRole(message)
+    // The input snapshot already owns all durable user history, including the
+    // current user turn. DeepAgent may echo that input in result.messages;
+    // accepting echoed user rows here creates a second user bubble on reload.
+    if (role === 'user') return Boolean(currentUser && message.messageId === currentUser.messageId)
+    // Historical assistant rows are already present in durableMessages. Only
+    // merge assistant output produced after the model's output boundary.
+    return role === 'assistant' && index >= outputStart
   })
   const outputAssistantIds = new Set(outputMessages.filter((message) => chatMessageRole(message) === 'assistant').map((message) => String(message.messageId || message.id || '')))
+  const outputAssistantContents = new Set(outputMessages.filter((message) => chatMessageRole(message) === 'assistant').map(normalizedChatContent).filter(Boolean))
   for (const [messageId, content] of partialAssistantMessages.entries()) {
     const text = String(content || '')
-    if (!text.trim() || outputAssistantIds.has(String(messageId))) continue
+    if (!text.trim() || outputAssistantIds.has(String(messageId)) || outputAssistantContents.has(text.replace(/\s+/g, ' ').trim())) continue
     outputMessages.push({ role: 'assistant', content: text, turnId: String(turnId || ''), runId: String(runId || ''), messageId: String(messageId), timestamp: new Date().toISOString(), sequence: ++messageSequence, status: 'partial' })
   }
   const merged = mergeMessageSnapshots(durableMessages, outputMessages)
@@ -313,7 +338,34 @@ async function runAgentTurn(session, message, options = {}) {
   const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess, onWorkflowEvent: notifyRunEvent })
   let agent
   try {
-    agent = await options.agentFactory({ tools, task, taskRef, executionMode })
+    agent = await options.agentFactory({
+      tools,
+      task,
+      taskRef,
+      executionMode,
+      workflowGuard: {
+        taskRef,
+        getDraftAvailable: () => Boolean(taskRef.current?.context?.contentVersion && taskRef.draftRelativePath),
+        onIntervention: async ({ toolName, decision, task: guardedTask, draftAvailable }) => {
+          const details = {
+            toolName,
+            intervention: decision.intervention || null,
+            nextTool: decision.nextTool || null,
+            currentState: guardedTask?.state || null,
+            draftAvailable,
+            reason: decision.reason || null,
+            ...contextFields(guardedTask?.context || taskRef.current?.context),
+          }
+          await runLogger.warn('workflow_guard_intervened', details)
+          await notifyRunEvent({
+            event: WORKFLOW_EVENTS.WORKFLOW_GUARD_INTERVENED,
+            task: { ...taskRef.current, sessionId: session.sessionId },
+            toolName,
+            ...details,
+          })
+        },
+      },
+    })
   } catch (error) {
     if (error && typeof error === 'object' && !error.runId) error.runId = runId
     throw error
@@ -391,9 +443,13 @@ async function loadSession(sessions, sessionStore, sessionId, serverLogger = nul
   const safeId = String(sessionId || '').trim()
   if (!safeId) return null
   const cached = sessions.get(safeId)
-  if (cached) return cached
+  if (cached) {
+    await ensureDraftReference(cached)
+    return cached
+  }
   const restored = await sessionStore.load(safeId)
   if (restored) {
+    await ensureDraftReference(restored)
     sessions.set(safeId, restored)
     const interrupted = restored.lastError?.code === 'SESSION_INTERRUPTED'
     await emitWorkflowEvent(serverLogger, interrupted ? WORKFLOW_EVENTS.SESSION_INTERRUPTED : WORKFLOW_EVENTS.SESSION_RESTORED, { ...restored.taskRef.current, sessionId: restored.sessionId }, {
@@ -403,6 +459,23 @@ async function loadSession(sessions, sessionStore, sessionId, serverLogger = nul
     })
   }
   return restored
+}
+
+// The draft path is an in-memory convenience, not the source of truth. Older
+// development snapshots may have a contentVersion but no draftRelativePath;
+// the path is deterministic from taskId + resumePath, so recover it from the
+// workspace before the Agent sees a false DRAFT_REQUIRED boundary.
+async function ensureDraftReference(session) {
+  const task = session?.taskRef?.current
+  if (!session?.taskRef || !task?.context?.contentVersion) return false
+  try {
+    const draft = await readResumeDraft(session.workspaceRoot, task.context.taskId, session.resumePath)
+    session.taskRef.draftRelativePath = draft.draftRelativePath
+    return true
+  } catch {
+    session.taskRef.draftRelativePath = null
+    return false
+  }
 }
 
 async function persistSession(sessionStore, session, event = null) {

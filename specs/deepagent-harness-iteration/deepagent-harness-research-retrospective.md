@@ -298,18 +298,34 @@ DeepAgents 官方 Skills 采用渐进式披露：模型先看到 Skill 元数据
 
 ## 8. 实施顺序
 
-本文件是研究与设计复盘，不代表已经完成实现。下一次实施应按以下顺序：
+本文件最初是研究与设计复盘；本轮已按 Harness 主链路落地并完成聊天数据流浏览器验收，评测和 durable continuation 仍是后续工作：
 
-1. 先修 `nextTool` 的状态计算错误；
-2. 新增 `workflow-coordinator` 纯函数和单元测试；
-3. 将现有工具统一接入 Guard；
-4. 增加 DeepAgent Workflow Middleware 和状态摘要注入；
-5. 增加错误恢复、幂等和过期身份测试；
-6. 增加 train/holdout Harness 评测；
-7. 真实浏览器验收多轮聊天、工具折叠和 A4 测量恢复；
-8. 通过验收后再考虑生产工具面收敛和子 Agent 拆分。
+1. [已完成] 修正 `nextTool` 的状态计算错误；
+2. [已完成] 新增 `workflow-coordinator` 纯函数和单元测试；
+3. [已完成] 将关键工具边界接入 Workflow Guard；
+4. [已完成] 增加 DeepAgent Workflow Middleware 和状态摘要注入；
+5. [已完成] 增加错误恢复、幂等和过期身份测试；
+6. [待完成] 增加 train/holdout Harness 评测；
+7. [部分完成] 已真实验收多轮聊天、工具折叠、草稿恢复后的预览失效和新会话 A4 预览；生产任务完整闭环仍需单独跑 holdout 场景；
+8. [待完成] 通过验收后再考虑生产工具面收敛和子 Agent 拆分。
 
-## 9. 本次复盘的最终判断
+## 9. 本轮落地与验收记录
+
+已落地：
+
+- `backend/src/core/workflow-coordinator.js`：唯一计算当前状态、草稿可用性、下一工具和恢复原因；
+- `backend/src/agent/workflow-guard-middleware.js`：向模型注入状态摘要，并在工具边界拦截非法测量/保存；
+- `backend/src/agent/resume-tools.js`：阻塞态或待修订态直接渲染时自动重新打开已有隔离草稿，清理过期渲染身份；
+- `backend/src/core/event-catalog.js` 与 `backend/src/server.js`：自动恢复记录为结构化日志和 SSE 工作流事件；
+- `backend/src/server.js`：会话恢复时以工作区草稿文件为事实源补齐丢失的 `draftRelativePath`，避免旧开发快照把已有草稿误判成 `DRAFT_REQUIRED`；
+- `backend/src/server.js`：流式 assistant 与最终 Agent 消息在持久化入口按回合、角色和归一化正文去重；同时丢弃 DeepAgent 回显的用户输入，避免同一用户消息被二次落盘；
+- `frontend/react/src/runtime/agent-chat-state.js`：对话读模型在同一回合内优先使用持久化最终 Agent 回复，流式文本只承担实时反馈，避免 Markdown 换行/表格压缩差异造成双渲染；
+- `backend/test/workflow-coordinator.test.js`：覆盖门禁、状态摘要、缺稿恢复和阻塞态直接渲染回归。
+- `backend/test/agent-chat-state.test.js` 与 `backend/test/agent-chat-integration.test.js`：覆盖流式/最终回复合并、Markdown 表格格式差异和用户消息不重复。
+
+当前自动化验收结果：后端 `npm test` 全量通过（87/87）；前端 `tsc --noEmit && vite build` 通过。浏览器在 `http://127.0.0.1:3395/react/` 完成真实验证：新会话问候为 1 条用户消息 + 1 个工具过程 + 1 条 Agent 回复；继续修订后为 2 个按回合排列的用户消息、2 个工具过程、2 条 Agent 回复，草稿恢复后预览正确回到“等待渲染”，控制台无 error/warn。截图验收确认未再出现同一轮两条 Agent 回复。
+
+## 10. 本次复盘的最终判断
 
 我们不需要把 CVAgent 改成一个僵硬的固定流程机器人，也不需要继续复制 DSH 的长提示词。
 

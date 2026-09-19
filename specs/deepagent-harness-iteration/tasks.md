@@ -36,3 +36,26 @@
   - 将当前测量后的业务续跑从定时器适配迁移到 LangGraph `interrupt` + checkpointer 或持久化恢复队列。
   - 本轮不扩大范围，先保留现有 `renderId` 和预算保护。
   - _Requirement: 4, 6_
+
+## 本轮文档落地追踪（2026-09-19）
+
+- [x] 8. 建立唯一的 `workflow-coordinator`
+  - 从任务状态和草稿可用性计算唯一 `nextTool` / `nextAction`。
+  - 对 `resume_render`、`resume_metrics`、`resume_save_version` 提供统一前置条件判断。
+
+- [x] 9. 接入 DeepAgent Workflow Guard Middleware
+  - 在模型调用前注入紧凑 Harness 状态摘要。
+  - 在工具边界阻止过期测量和非法保存，并对有草稿的阻塞态渲染自动恢复。
+  - 自动恢复写入结构化日志和工作流事件。
+
+- [x] 10. 增加阻塞态恢复和工具门禁回归测试
+  - 覆盖缺少草稿、阻塞态直接渲染、非法测量和状态摘要。
+  - 后端全量测试通过后再进入浏览器验收。
+
+- [~] 11. 真实浏览器闭环验收
+  - 已完成：新会话问候、多轮“继续修订”、工具过程折叠、流式/最终回复去重、草稿恢复后的预览失效与控制台检查。
+  - 待补：以固定 holdout 数据跑完整生产任务、真实浏览器测量回传和正式版本保存。
+
+- [ ] 12. train/holdout Harness 评测
+
+- [ ] 13. durable continuation

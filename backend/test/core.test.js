@@ -602,6 +602,46 @@ test('bootstrap creates an isolated preview session without invoking an agent', 
   }
 })
 
+test('restored sessions recover a missing draft path before a blocked render', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-restored-draft-'))
+  const sessionDirectory = path.join(workspaceRoot, 'sessions')
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Restored Resume\n\nExisting evidence\n', 'utf8')
+  let server = createServer({ logger: createLogger({ directory: path.join(workspaceRoot, 'logs-1'), component: 'restored-draft-test-1' }), sessionDirectory })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  let sessionId
+  try {
+    const address = server.address()
+    const bootstrap = await (await fetch(`http://127.0.0.1:${address.port}/api/agent/bootstrap`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceRoot, resumePath: 'resume.md', targetPages: 1, templateId: 'campus-standard' }) })).json()
+    sessionId = bootstrap.sessionId
+  } finally {
+    await closeServer(server)
+  }
+
+  try {
+    const snapshotPath = path.join(sessionDirectory, sessionId, 'session.json')
+    const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'))
+    snapshot.taskRef.draftRelativePath = null
+    snapshot.taskRef.current.state = TASK_STATES.BLOCKED
+    snapshot.taskRef.current.blockers = ['stale render']
+    await fs.writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8')
+
+    server = createServer({ logger: createLogger({ directory: path.join(workspaceRoot, 'logs-2'), component: 'restored-draft-test-2' }), sessionDirectory })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/agent/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) })
+    const body = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(body.ok, true)
+    assert.equal(body.state, TASK_STATES.RENDERED)
+    assert.equal(body.result.state, TASK_STATES.RENDERED)
+    assert.ok(body.context.renderId)
+  } finally {
+    if (server.listening) await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
 test('agent event stream delivers correlated run and tool progress to the frontend', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-events-'))
   await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Event Resume\n\nExisting evidence\n', 'utf8')

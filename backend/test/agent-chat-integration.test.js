@@ -336,6 +336,8 @@ test('streaming Agent sends ordered answer deltas while keeping reasoning privat
     assert.ok(events.some((event) => event.payload?.event === 'assistant_message_finished' && event.payload?.assistantChars === 8))
     const session = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
     assert.ok(session.session.messages.some((message) => message.role === 'user' && message.content === '请读取当前简历。'))
+    assert.equal(session.session.messages.filter((message) => message.role === 'user' && message.content === '请读取当前简历。').length, 1)
+    assert.equal(session.session.messages.filter((message) => message.role === 'assistant' && String(message.content || '').includes('已读取当前简历。')).length, 1)
     assert.ok(session.session.workflowEvents.every((event) => !String(event.delta || '').includes('private chain of thought')))
     assert.ok(session.session.workflowEvents.some((event) => event.event === 'assistant_message_finished' && event.assistantChars === 8))
     const replayResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`)

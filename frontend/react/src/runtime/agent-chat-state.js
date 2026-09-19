@@ -197,7 +197,45 @@ export function eventGroups(events) {
 function assistantEntryMatchesMessage(entry, message) {
   if (entry.kind !== 'assistant') return false
   if (entry.messageId && message.messageId && entry.messageId === message.messageId) return true
-  return String(entry.text || '').trim() === String(message.content || '').trim()
+  const canonicalText = (value) => String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s*\|\s*/g, '|')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const entryText = canonicalText(entry.text)
+  const messageTextValue = canonicalText(message.content)
+  return Boolean(entryText && messageTextValue && entryText === messageTextValue)
+}
+
+function shouldPreferPersistedAssistant(workflowEntries, messages) {
+  const assistantEntries = workflowEntries.filter((entry) => entry.kind === 'assistant' && String(entry.text || '').trim())
+  const persistedAssistants = messages.filter((message) => message.role === 'assistant' && String(message.content || '').trim())
+  if (!assistantEntries.length || !persistedAssistants.length) return false
+
+  // During streaming, DeepAgent may emit a compact text projection while the
+  // final model snapshot persists the same answer with Markdown line breaks.
+  // When this turn has exactly one answer on each rail, the durable snapshot
+  // is authoritative for the final render. Keeping both would render one
+  // logical answer twice; keeping the stream would lose the final formatting.
+  if (assistantEntries.length === 1 && persistedAssistants.length === 1) return true
+
+  // For multi-message turns, only switch to the durable rail when every
+  // streamed answer has an unambiguous persisted counterpart.
+  return assistantEntries.length === persistedAssistants.length && assistantEntries.every((entry) => (
+    persistedAssistants.some((message) => assistantEntryMatchesMessage(entry, message))
+  ))
+}
+
+function hideAssistantWorkflowEvents(workflow) {
+  if (!workflow) return null
+  return {
+    ...workflow,
+    events: workflow.events.filter((event) => ![
+      'assistant_message_started',
+      'assistant_delta',
+      'assistant_message_finished',
+    ].includes(event.event)),
+  }
 }
 
 /**
@@ -237,13 +275,16 @@ export function reduceAgentTimeline({ messages = [], events = [] } = {}) {
   return [...turns.values()]
     .map((turn) => {
       const workflowEntries = turn.workflow ? projectWorkflowTimeline(turn.workflow.events) : []
+      const preferPersistedAssistant = shouldPreferPersistedAssistant(workflowEntries, turn.messages)
       const visibleMessages = turn.messages
         .sort((left, right) => left.order - right.order || left.sourceIndex - right.sourceIndex)
-        .filter((message) => message.role !== 'assistant' || !workflowEntries.some((entry) => assistantEntryMatchesMessage(entry, message)))
+        .filter((message) => message.role !== 'assistant' || preferPersistedAssistant || !workflowEntries.some((entry) => assistantEntryMatchesMessage(entry, message)))
       return {
         ...turn,
         messages: visibleMessages,
-        workflow: turn.workflow && turn.workflow.events.length ? turn.workflow : null,
+        workflow: turn.workflow && turn.workflow.events.length
+          ? (preferPersistedAssistant ? hideAssistantWorkflowEvents(turn.workflow) : turn.workflow)
+          : null,
       }
     })
     .filter((turn) => turn.messages.length || turn.workflow)

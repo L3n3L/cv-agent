@@ -62,6 +62,10 @@ export function workflowContext(value) {
   const taskOrContext = value?.context ? value.context : value
   const fields = contextFields(taskOrContext)
   if (value?.sessionId) fields.sessionId = String(value.sessionId)
+  // A live execution can carry its correlation identity at the task level
+  // while the nested context still represents the previous run. Prefer the
+  // explicit top-level value so observability events follow the actual run.
+  if (value?.runId) fields.runId = String(value.runId)
   return fields
 }
 

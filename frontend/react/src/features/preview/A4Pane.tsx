@@ -43,6 +43,8 @@ function normalizeIconTuning(tuning: IconTuning, name: string) {
 
 export function A4Pane({ templateName, presentation, templateLayout, onDraftChange, onApplyTuning, onOpenFullPreview }: A4PaneOptions) {
   const frameRef = useRef<HTMLIFrameElement>(null)
+  const localTuningDirty = useRef(false)
+  const externalSignature = JSON.stringify({ templateLayout: templateLayout || {}, presentation: presentation || {} })
   const [tuningOpen, setTuningOpen] = useState(false)
   const [layout, setLayout] = useState(() => resolveLayout(templateLayout, presentation))
   const [iconTuning, setIconTuning] = useState<IconTuning>(() => presentation?.iconTuning || {})
@@ -50,6 +52,15 @@ export function A4Pane({ templateName, presentation, templateLayout, onDraftChan
   const [iconHistory, setIconHistory] = useState<IconTuning[]>([])
   const [iconInventory, setIconInventory] = useState<IconInventoryItem[]>([])
   const [clearedGroups, setClearedGroups] = useState<Array<'layout' | 'iconTuning'>>([])
+
+  useEffect(() => {
+    if (localTuningDirty.current) return
+    setLayout(resolveLayout(templateLayout, presentation))
+    setIconTuning(presentation?.iconTuning || {})
+    setLayoutHistory([])
+    setIconHistory([])
+    setClearedGroups([])
+  }, [externalSignature])
 
   const postPreview = (nextLayout = layout, nextIcons = iconTuning) => {
     frameRef.current?.contentWindow?.postMessage({ source: 'cvagent-resume-layout-preview', layout: nextLayout }, '*')
@@ -76,6 +87,7 @@ export function A4Pane({ templateName, presentation, templateLayout, onDraftChan
   }
 
   const updateLayout = <K extends keyof PresentationLayout>(key: K, value: PresentationLayout[K]) => {
+    localTuningDirty.current = true
     setLayoutHistory((history) => [...history, layout].slice(-20))
     const next = { ...layout, [key]: value }
     const nextCleared = clearedGroups.filter((group) => group !== 'layout')
@@ -86,6 +98,7 @@ export function A4Pane({ templateName, presentation, templateLayout, onDraftChan
   }
 
   const updateIcon = (name: string, key: 'scale' | 'offsetY', value: number) => {
+    localTuningDirty.current = true
     setIconHistory((history) => [...history, iconTuning].slice(-20))
     const next = { ...iconTuning, [name]: { ...(iconTuning[name] || {}), [key]: value } }
     const nextCleared = clearedGroups.filter((group) => group !== 'iconTuning')
@@ -119,10 +132,12 @@ export function A4Pane({ templateName, presentation, templateLayout, onDraftChan
 
   const apply = async () => {
     await onApplyTuning({ layout, iconTuning, clear: clearedGroups })
+    localTuningDirty.current = false
     setTuningOpen(false)
   }
 
   const reset = (groups: Array<'layout' | 'iconTuning'>) => {
+    localTuningDirty.current = true
     let nextLayout = layout
     let nextIcons = iconTuning
     if (groups.includes('layout')) {

@@ -26,6 +26,8 @@ export function createResumeSession({ workspace, resumePath, templateId, templat
     templateRevision,
     sourceHash,
     executionMode,
+    activeTurnId: null,
+    workflowSequence: 0,
     automation: {
       continuationCount: 0,
       continuationBudget: DEFAULT_AUTO_CONTINUATION_BUDGET,

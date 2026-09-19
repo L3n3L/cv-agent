@@ -25,7 +25,7 @@ async function proxyApi(request, response, url) {
   const startedAt = Date.now()
   const target = `${apiOrigin}${url.pathname}${url.search}`
   const headers = new Headers()
-  for (const name of ['accept', 'content-type', 'if-none-match']) {
+  for (const name of ['accept', 'content-type', 'if-none-match', 'last-event-id']) {
     const value = request.headers[name]
     if (typeof value === 'string' && value) headers.set(name, value)
   }

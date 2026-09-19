@@ -127,6 +127,42 @@ test('a new user enters an empty workspace and CVAgent initializes the first res
   }
 })
 
+test('Agent failure closes the run with the current runId and remains visible after reload', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-agent-failure-integration-'))
+  const sessionDirectory = path.join(workspaceRoot, 'sessions')
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# 测试候选人\n\n## 教育经历\n\n测试大学\n', 'utf8')
+  const server = createServer({
+    logger: createLogger({ directory: path.join(workspaceRoot, 'logs'), component: 'agent-failure-integration-test' }),
+    sessionDirectory,
+    agentFactory: async () => { throw Object.assign(new Error('injected agent failure'), { code: 'INJECTED_AGENT_FAILURE' }) },
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const bootstrapped = await jsonRequest(`${base}/api/agent/bootstrap`, { workspaceRoot, resumePath: 'resume.md', targetPages: 1 })
+    assert.equal(bootstrapped.response.status, 200)
+    const run = await jsonRequest(`${base}/api/agent/run`, { sessionId: bootstrapped.body.sessionId, workspaceRoot, resumePath: 'resume.md', message: '检查当前简历。' })
+    assert.equal(run.response.status, 500)
+    assert.equal(run.body.errorCode, 'INJECTED_AGENT_FAILURE')
+
+    const restored = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(bootstrapped.body.sessionId)}`)).json()
+    const started = [...restored.session.workflowEvents].reverse().find((event) => event.event === 'agent_run_started')
+    const terminal = [...restored.session.workflowEvents].reverse().find((event) => event.event === 'agent_run_finished')
+    assert.equal(terminal.runId, started.runId)
+    assert.equal(terminal.outcome, 'failed')
+    assert.equal(terminal.errorCode, 'INJECTED_AGENT_FAILURE')
+    assert.match(terminal.runId, /^run-/)
+    assert.equal(restored.session.messages.at(-1).content, '检查当前简历。')
+    assert.equal(restored.session.messages.at(-1).turnId, terminal.turnId)
+    assert.equal(restored.session.runState, 'failed')
+  } finally {
+    await closeServer(server)
+    await fs.rm(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
 test('scripted Agent preserves the MCP workflow through SSE, browser metrics, and explicit save', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-agent-chat-integration-'))
   const sessionDirectory = path.join(workspaceRoot, 'sessions')
@@ -156,6 +192,8 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     assert.equal(run.response.status, 200)
     assert.equal(run.body.state, TASK_STATES.RENDERED)
     assert.match(run.body.context.renderId, /^render_/)
+    const pausedSession = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+    assert.ok(pausedSession.session.messages.some((message) => message.role === 'user' && message.content === '请检查当前简历，但先不要保存。'))
 
     const blocked = await jsonRequest(`${base}/api/agent/measure`, {
       sessionId,
@@ -292,16 +330,23 @@ test('streaming Agent sends ordered answer deltas while keeping reasoning privat
     const events = await ssePromise
     const deltas = events.filter((event) => event.payload?.event === 'assistant_delta').map((event) => event.payload.delta)
     assert.deepEqual(deltas, ['已读取', '当前简历。'])
-    assert.ok(events.some((event) => event.payload?.event === 'agent_run_started' && event.payload?.reasoningSummary))
+    assert.ok(events.some((event) => event.payload?.event === 'agent_run_started' && event.payload?.phase === '准备'))
+    assert.ok(events.every((event) => event.payload?.reasoningSummary === undefined))
     assert.ok(events.some((event) => event.payload?.event === 'assistant_message_started'))
     assert.ok(events.some((event) => event.payload?.event === 'assistant_message_finished' && event.payload?.assistantChars === 8))
     const session = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
+    assert.ok(session.session.messages.some((message) => message.role === 'user' && message.content === '请读取当前简历。'))
     assert.ok(session.session.workflowEvents.every((event) => !String(event.delta || '').includes('private chain of thought')))
     assert.ok(session.session.workflowEvents.some((event) => event.event === 'assistant_message_finished' && event.assistantChars === 8))
     const replayResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`)
     const replayed = await waitForSseEvents(replayResponse, (replayedEvents) => replayedEvents.some((event) => event.payload?.event === 'assistant_message_finished'))
     assert.ok(replayed.some((event) => event.payload?.event === 'agent_run_started'))
     assert.ok(replayed.some((event) => event.payload?.event === 'agent_run_finished'))
+    const cursorResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`, { headers: { 'last-event-id': '1' } })
+    const afterCursor = await waitForSseEvents(cursorResponse, (cursorEvents) => cursorEvents.some((event) => event.payload?.event === 'agent_run_finished'))
+    const cursorSequences = afterCursor.filter((event) => event.payload?.sequence !== undefined).map((event) => Number(event.payload.sequence))
+    assert.ok(cursorSequences.length > 0)
+    assert.ok(cursorSequences.every((sequence) => sequence > 1))
   } finally {
     await closeServer(server)
     await fs.rm(workspaceRoot, { recursive: true, force: true })
@@ -350,6 +395,7 @@ test('production mode resumes automatically after a blocked browser measurement'
     assert.equal(latest.session.status, 'rendered')
     assert.notEqual(latest.session.taskRef.current.context.renderId, run.body.context.renderId)
     assert.equal(latest.session.automation.continuationCount, 1)
+    assert.ok(latest.session.messages.every((message) => !String(message.content || '').startsWith('真实浏览器已经完成 renderId=')))
   } finally {
     await closeServer(server)
     await fs.rm(workspaceRoot, { recursive: true, force: true })

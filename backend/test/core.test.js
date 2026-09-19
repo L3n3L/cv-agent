@@ -93,6 +93,35 @@ test('session store survives restart and marks interrupted runs for recovery', a
   }
 })
 
+test('session store replays only durable workflow events after a sequence cursor', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-workflow-replay-'))
+  try {
+    const store = createSessionStore({ directory })
+    const session = {
+      sessionId: 'session_replay_test',
+      workspaceId: 'workspace-1',
+      workspaceRoot: 'E:/resume-workspace',
+      resumePath: 'resume.md',
+      status: 'drafting',
+      runState: 'running',
+      workflowSequence: 1,
+      taskRef: { current: task(), presentation: null, presentationRevision: 1 },
+      messages: [],
+      workflowEvents: [],
+    }
+    await store.save(session, { event: 'agent_run_started', sequence: 1, sessionId: session.sessionId, runId: 'run-1', taskId: 'task-1' })
+    session.workflowSequence = 3
+    await store.save(session, { event: 'tool_call_succeeded', sequence: 3, sessionId: session.sessionId, runId: 'run-1', taskId: 'task-1', toolName: 'resume_read' })
+
+    const afterOne = await store.readWorkflowEvents(session.sessionId, 1)
+    assert.deepEqual(afterOne.map((event) => event.sequence), [3])
+    assert.equal(afterOne[0].event, 'tool_call_succeeded')
+    assert.deepEqual((await store.readWorkflowEvents(session.sessionId, 2)).map((event) => event.sequence), [3])
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('agent exposes one canonical MCP-aligned resume workflow surface', () => {
   const tools = createResumeTools({ workspaceRoot: 'E:/resume-workspace', resumePath: 'resume.md', taskRef: { current: task() }, includeMeasurementTool: true })
   const names = tools.map((item) => item.name)
@@ -696,6 +725,11 @@ test('measurement callback verifies the exact rendered artifact', async () => {
     assert.equal(continued.continued, true)
     assert.equal(continued.state, TASK_STATES.RENDERED)
     assert.notEqual(continued.context.renderId, run.context.renderId)
+    const historicalPreview = await fetch(`http://127.0.0.1:${address.port}/api/agent/preview?sessionId=${encodeURIComponent(run.sessionId)}&renderId=${encodeURIComponent(run.context.renderId)}`)
+    assert.equal(historicalPreview.status, 200)
+    assert.match(await historicalPreview.text(), /data-product="CVAgent"/)
+    const missingPreview = await fetch(`http://127.0.0.1:${address.port}/api/agent/preview?sessionId=${encodeURIComponent(run.sessionId)}&renderId=render_missing`)
+    assert.equal(missingPreview.status, 404)
     const measureResponse = await fetch(`http://127.0.0.1:${address.port}/api/agent/measure`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, renderId: continued.context.renderId, pageCount: 1, occupancy: [0.95], overflow: false }) })
     const measured = await measureResponse.json()
     assert.equal(measureResponse.status, 200)

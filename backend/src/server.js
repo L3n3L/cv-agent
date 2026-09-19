@@ -36,6 +36,77 @@ function assistantText(result) {
   return ''
 }
 
+function withoutTransientUserMessage(messages, content, turnId = '') {
+  const expected = String(content || '')
+  const expectedTurnId = String(turnId || '')
+  const list = Array.isArray(messages) ? messages : []
+  let removeIndex = -1
+  list.forEach((message, index) => {
+    if (chatMessageRole(message) !== 'user') return
+    if (expectedTurnId && String(message.turnId || '') === expectedTurnId) removeIndex = index
+    else if (!expectedTurnId && chatMessageContent(message) === expected) removeIndex = index
+  })
+  if (removeIndex < 0) list.forEach((message, index) => {
+    if (chatMessageRole(message) === 'user' && chatMessageContent(message) === expected) removeIndex = index
+  })
+  return removeIndex < 0 ? list : list.filter((_message, index) => index !== removeIndex)
+}
+
+function chatMessageRole(message) {
+  return message?.role || (message?.type === 'human' ? 'user' : message?.type === 'ai' ? 'assistant' : message?.type === 'tool' ? 'tool' : message?.type || '')
+}
+
+function chatMessageContent(message) {
+  if (typeof message?.content === 'string') return message.content
+  if (Array.isArray(message?.content)) return message.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
+  return ''
+}
+
+function sameChatMessage(left, right) {
+  return chatMessageRole(left) === chatMessageRole(right) && chatMessageContent(left) === chatMessageContent(right)
+}
+
+function containsMessageSequence(messages, expected) {
+  const list = Array.isArray(messages) ? messages : []
+  const sequence = Array.isArray(expected) ? expected : []
+  if (!sequence.length) return true
+  for (let start = 0; start <= list.length - sequence.length; start += 1) {
+    if (sequence.every((message, index) => sameChatMessage(list[start + index], message))) return true
+  }
+  return false
+}
+
+function captureAgentMessages(session, result, { persistUserMessage, transientMessage, inputMessages, turnId, runId } = {}) {
+  if (!Array.isArray(result?.messages)) return
+  const currentUser = Array.isArray(inputMessages) ? inputMessages[inputMessages.length - 1] : null
+  const durableMessages = persistUserMessage ? inputMessages : (Array.isArray(inputMessages) ? inputMessages.slice(0, -1) : [])
+  const rawMessages = result.messages
+  let transientIndex = -1
+  rawMessages.forEach((message, index) => {
+    if (chatMessageRole(message) === 'user' && chatMessageContent(message) === String(transientMessage || '')) transientIndex = index
+  })
+  const outputStart = transientIndex >= 0
+    ? transientIndex + 1
+    : rawMessages.length < durableMessages.length ? 0 : durableMessages.length
+  let assistantIndex = 0
+  const outputMessages = rawMessages.map((message, index) => {
+    const role = chatMessageRole(message)
+    if (role === 'user' && index === transientIndex && currentUser) return { ...message, ...currentUser, role: 'user', content: currentUser.content }
+    if (role !== 'assistant' || index < outputStart) return message
+    assistantIndex += 1
+    return {
+      ...message,
+      role: 'assistant',
+      turnId: String(turnId || message.turnId || ''),
+      runId: String(runId || message.runId || ''),
+      messageId: String(message.messageId || message.id || `assistant-${runId || 'run'}-${assistantIndex}`),
+      timestamp: message.timestamp || new Date().toISOString(),
+    }
+  })
+  const merged = containsMessageSequence(outputMessages, durableMessages) ? outputMessages : [...durableMessages, ...outputMessages]
+  session.messages = persistUserMessage ? merged : withoutTransientUserMessage(merged, transientMessage, turnId)
+}
+
 const TOOL_PHASES = Object.freeze({
   workspace_info: ['读取', '正在读取工作区信息。'],
   workspace_materials_list: ['读取材料', '正在读取可用材料，建立证据范围。'],
@@ -69,17 +140,23 @@ function safeProgressText(value, maxLength = 240) {
 }
 
 function workflowProgress(event = {}) {
-  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_STARTED) return { phase: '准备', reasoningSummary: '正在准备本轮任务。' }
-  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_FINISHED) return { phase: '完成', reasoningSummary: '本轮处理已完成，正在同步结果。' }
+  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_STARTED) return { phase: '准备' }
+  if (event.event === WORKFLOW_EVENTS.AGENT_RUN_FINISHED) return { phase: '完成' }
   const phase = TOOL_PHASES[String(event.toolName || '')]
   if (!phase) return {}
-  if (event.event === WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED) return { phase: phase[0], reasoningSummary: `已完成${phase[0]}，正在整理下一步。` }
-  if (event.event === WORKFLOW_EVENTS.TOOL_CALL_FAILED) return { phase: phase[0], reasoningSummary: `${phase[0]}步骤遇到阻断，需要检查失败原因。` }
-  return { phase: phase[0], reasoningSummary: phase[1] }
+  return { phase: phase[0] }
 }
 
 function createWorkflowEventBroker() {
   const clients = new Map()
+  const frame = (event) => {
+    // Only persisted workflow events may advance the browser's replay cursor.
+    // Assistant deltas are intentionally live-only; putting their sequence in
+    // Last-Event-ID would make a reconnect skip the last durable event.
+    const replayable = event?.event !== WORKFLOW_EVENTS.ASSISTANT_DELTA
+    const id = replayable && Number.isFinite(Number(event?.sequence)) ? `id: ${Number(event.sequence)}\n` : ''
+    return `${id}event: workflow\ndata: ${JSON.stringify(event)}\n\n`
+  }
   return {
     subscribe(sessionId, response) {
       const key = String(sessionId)
@@ -102,7 +179,7 @@ function createWorkflowEventBroker() {
     publish(sessionId, event) {
       const current = clients.get(String(sessionId))
       if (!current?.size) return
-      const data = `event: workflow\ndata: ${JSON.stringify(event)}\n\n`
+      const data = frame(event)
       for (const response of current) {
         try { response.write(data) } catch { response.destroy() }
       }
@@ -119,11 +196,16 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
   const task = event.task || session.taskRef?.current || {}
   const resultSummary = safeWorkflowSummary(event.resultSummary)
   const progress = workflowProgress(event)
+  const turnId = String(event.turnId || session.activeTurnId || '').trim()
+  session.workflowSequence = Math.max(0, Number(session.workflowSequence) || 0) + 1
   const payload = {
     timestamp: new Date().toISOString(),
+    sequence: session.workflowSequence,
     event: event.event,
     sessionId: session.sessionId,
+    ...(turnId ? { turnId } : {}),
     ...contextFields(task.context),
+    ...(event.runId ? { runId: String(event.runId) } : {}),
     ...(event.toolName ? { toolName: event.toolName } : {}),
     ...(event.toolCallId ? { toolCallId: String(event.toolCallId) } : {}),
     ...(event.messageId ? { messageId: String(event.messageId) } : {}),
@@ -136,7 +218,7 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
     ...(event.reason ? { reason: safeProgressText(event.reason, 96) } : {}),
     ...(event.delta ? { delta: safeProgressText(event.delta, 2000) } : {}),
     ...(event.phase || progress.phase ? { phase: safeProgressText(event.phase || progress.phase, 48) } : {}),
-    ...(event.reasoningSummary || progress.reasoningSummary ? { reasoningSummary: safeProgressText(event.reasoningSummary || progress.reasoningSummary) } : {}),
+    ...(event.reasoningSummary ? { reasoningSummary: safeProgressText(event.reasoningSummary) } : {}),
     ...(resultSummary ? { resultSummary } : {}),
   }
   // Text deltas are live transport data, not audit history. Persisting every
@@ -144,8 +226,8 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
   // evict the tool/verification timeline that must remain after the session
   // ends. The final assistant message is persisted with the session snapshot.
   if (event.event !== WORKFLOW_EVENTS.ASSISTANT_DELTA) {
-    session.workflowEvents = [...(Array.isArray(session.workflowEvents) ? session.workflowEvents : []), payload].slice(-240)
-    await persistSession(sessionStore, session).catch(() => {})
+    session.workflowEvents = [...(Array.isArray(session.workflowEvents) ? session.workflowEvents : []), payload].slice(-2000)
+    await persistSession(sessionStore, session, payload).catch(() => {})
   }
   broker.publish(session.sessionId, payload)
 }
@@ -153,15 +235,32 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
 async function runAgentTurn(session, message, options = {}) {
   const taskRef = session.taskRef
   const task = taskRef.current
-  const runLogger = options.serverLogger.child(contextFields(task.context))
+  const runId = String(options.runId || `run-${crypto.randomUUID()}`)
+  const turnId = String(options.turnId || (options.mode === 'measurement_continuation' ? session.activeTurnId : '') || `turn-${crypto.randomUUID()}`)
+  session.activeTurnId = turnId
+  // The task context is the source used by tool-runner and workflow logging.
+  // Refresh its per-execution identity before any tool or model callback can
+  // emit an event; otherwise durable SSE events carry the new runId while
+  // logger fields still inherit the previous run's context.
+  task.context = { ...(task.context || {}), runId }
+  task.runId = runId
+  const runTask = { ...task, runId, context: { ...task.context } }
+  const runLogger = options.serverLogger.child({ ...contextFields(task.context), turnId, runId })
+  const notifyRunEvent = (payload) => notifyWorkflowEvent(options.onWorkflowEvent, { ...payload, turnId, runId })
   const mode = options.mode || 'user_message'
   const executionMode = options.executionMode || session.executionMode || AGENT_EXECUTION_MODES.CHAT
+  const persistUserMessage = options.persistUserMessage === true
+  const inputMessages = [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message, turnId, runId, messageId: `user-${turnId}`, timestamp: new Date().toISOString() }]
+  // User turns are durable before the Agent starts. Internal continuation
+  // prompts still enter the Agent input, but must never become conversation
+  // history visible to the user.
+  if (persistUserMessage) session.messages = inputMessages
   session.runState = 'running'
   session.status = task.state
   session.lastError = null
-  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, executionMode, ...contextFields(task.context) })
-  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...task, sessionId: session.sessionId }, { state: session.status, mode, executionMode, resumePath: session.resumePath })
-  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, state: session.status, mode, executionMode, ...contextFields(task.context), runId })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, { ...runTask, sessionId: session.sessionId }, { state: session.status, mode, executionMode, resumePath: session.resumePath })
+  await notifyRunEvent({ event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
   const abortController = new AbortController()
   let pauseAfterRender = false
   let completeAfterFinalize = false
@@ -176,10 +275,16 @@ async function runAgentTurn(session, message, options = {}) {
       abortController.abort(Object.assign(new Error('resume finalized'), { code: 'AGENT_FINALIZED' }))
     }
   }
-  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess, onWorkflowEvent: options.onWorkflowEvent })
-  const agent = await options.agentFactory({ tools, task, taskRef, executionMode })
+  const tools = createResumeTools({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef, logger: runLogger, executionMode, onToolSuccess, onWorkflowEvent: notifyRunEvent })
+  let agent
+  try {
+    agent = await options.agentFactory({ tools, task, taskRef, executionMode })
+  } catch (error) {
+    if (error && typeof error === 'object' && !error.runId) error.runId = runId
+    throw error
+  }
   if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
-  const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
+  const input = { messages: inputMessages }
   if (executionMode !== AGENT_EXECUTION_MODES.READ_ONLY) input.files = await resumeProductionSkillFiles()
   const assistantStreamChars = new Map()
   let streamed
@@ -189,33 +294,37 @@ async function runAgentTurn(session, message, options = {}) {
     onAssistantStart: async ({ messageId }) => {
       assistantStreamChars.set(messageId, 0)
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, { ...task, sessionId: session.sessionId }, { messageId, mode, executionMode })
-      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+      await notifyRunEvent({ event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
     },
     onAssistantDelta: async ({ messageId, delta }) => {
       assistantStreamChars.set(messageId, (assistantStreamChars.get(messageId) || 0) + String(delta || '').length)
-      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+      await notifyRunEvent({ event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
     },
     onAssistantFinish: async ({ messageId }) => {
       const assistantChars = assistantStreamChars.get(messageId) || 0
       await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, { ...task, sessionId: session.sessionId }, { messageId, assistantChars, mode, executionMode })
-      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, assistantChars, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+      await notifyRunEvent({ event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, assistantChars, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
     },
     })
   } catch (error) {
-    if (!pauseAfterRender && !completeAfterFinalize) throw error
+    if (!pauseAfterRender && !completeAfterFinalize) {
+      if (error && typeof error === 'object' && !error.runId) error.runId = runId
+      throw error
+    }
   }
+  captureAgentMessages(session, streamed?.result, { persistUserMessage, transientMessage: message, inputMessages, turnId, runId })
   if (pauseAfterRender) {
     const pausedTask = taskRef.current
     session.runState = 'waiting_for_measurement'
     session.status = pausedTask.state
     session.lastError = null
     const pauseDetails = { state: pausedTask.state, mode, executionMode, renderId: pausedTask.context.renderId, reason: 'browser_measurement_required', ...contextFields(pausedTask.context) }
-    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, outcome: 'paused', ...pauseDetails })
-    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_PAUSED, { ...pausedTask, sessionId: session.sessionId }, pauseDetails)
-    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
-    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'paused', ...pauseDetails })
-    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...pausedTask, sessionId: session.sessionId }, { outcome: 'paused', ...pauseDetails })
-    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, ...pauseDetails, runId })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_PAUSED, { ...pausedTask, runId, sessionId: session.sessionId }, pauseDetails)
+    await notifyRunEvent({ event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'paused', ...pauseDetails, runId })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...pausedTask, runId, sessionId: session.sessionId }, { outcome: 'paused', ...pauseDetails })
+    await notifyRunEvent({ event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails })
     return { result: streamed?.result || { messages: [] }, task: pausedTask, paused: true }
   }
   if (completeAfterFinalize) {
@@ -224,20 +333,19 @@ async function runAgentTurn(session, message, options = {}) {
     session.status = completedTask.state
     session.lastError = null
     const finishDetails = { outcome: 'success', state: completedTask.state, mode, executionMode, ...contextFields(completedTask.context) }
-    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, ...finishDetails })
-    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...completedTask, sessionId: session.sessionId }, finishDetails)
-    await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...completedTask, sessionId: session.sessionId }, ...finishDetails })
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, ...finishDetails, runId })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...completedTask, runId, sessionId: session.sessionId }, finishDetails)
+    await notifyRunEvent({ event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...completedTask, sessionId: session.sessionId }, ...finishDetails })
     return { result: streamed?.result || { messages: [] }, task: completedTask, completedEarly: true }
   }
-  const result = streamed.result
-  if (Array.isArray(result?.messages)) session.messages = result.messages
+  const result = streamed?.result || { messages: [] }
   const nextTask = taskRef.current
   session.runState = 'idle'
   session.status = nextTask.state
   session.lastError = null
-  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, executionMode, ...contextFields(nextTask.context) })
-  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode, executionMode })
-  await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...nextTask, sessionId: session.sessionId }, outcome: 'success', mode, executionMode })
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'success', state: session.status, mode, executionMode, ...contextFields(nextTask.context), runId })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...nextTask, runId, sessionId: session.sessionId }, { outcome: 'success', state: nextTask.state, assistantChars: assistantText(result).length, mode, executionMode })
+  await notifyRunEvent({ event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...nextTask, sessionId: session.sessionId }, outcome: 'success', mode, executionMode })
   return { result, task: nextTask }
 }
 
@@ -261,13 +369,20 @@ async function loadSession(sessions, sessionStore, sessionId, serverLogger = nul
 
 async function persistSession(sessionStore, session, event = null) {
   if (!session?.sessionId) return
-  await sessionStore.save(session, event)
+  const persistedEvent = event && !event.turnId && session.activeTurnId
+    ? { ...event, turnId: session.activeTurnId }
+    : event
+  await sessionStore.save(session, persistedEvent)
 }
 
 function sessionToolPersistence(sessionStore, session) {
-  return async ({ toolName }) => {
+  return async () => {
     session.status = session.taskRef.current?.state || session.status || 'idle'
-    await persistSession(sessionStore, session, { event: WORKFLOW_EVENTS.TOOL_CALL_SUCCEEDED, toolName, state: session.status, ...contextFields(session.taskRef.current?.context) })
+    // runResumeTool already publishes and durably records the structured
+    // tool lifecycle through onWorkflowEvent. This callback only snapshots
+    // the mutated task/artifact state; writing another terminal tool event
+    // here created an unsequenced duplicate in events.ndjson.
+    await persistSession(sessionStore, session)
   }
 }
 
@@ -275,22 +390,25 @@ async function recordAgentRunFailure(session, error, options, mode = 'user_messa
   if (!session) return
   const errorCode = String(error?.code || 'AGENT_RUN_FAILED')
   const errorMessage = String(error?.message || error)
+  const runId = String(options?.runId || error?.runId || `run-${crypto.randomUUID()}`)
+  const failedTask = { ...session.taskRef.current, runId }
   session.runState = 'failed'
   session.status = session.taskRef.current?.state || 'failed'
   session.lastError = { code: errorCode, message: errorMessage }
   if (errorCode === 'SOURCE_CHANGED') {
-    await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...session.taskRef.current, sessionId: session.sessionId }, { errorCode, resumePath: session.resumePath }).catch(() => {})
+    await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...failedTask, sessionId: session.sessionId }, { errorCode, resumePath: session.resumePath }).catch(() => {})
   }
-  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode, errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
-  await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode, errorCode }).catch(() => {})
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode, errorCode, ...contextFields(session.taskRef.current?.context), runId }).catch(() => {})
+  await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...failedTask, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode, errorCode }).catch(() => {})
   await publishWorkflowEvent(options.workflowEvents, session, {
     event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED,
-    task: { ...session.taskRef.current, sessionId: session.sessionId },
+    task: { ...failedTask, sessionId: session.sessionId },
+    runId,
     outcome: 'failed',
     errorCode,
     mode,
   }, options.sessionStore).catch(() => {})
-  await options.serverLogger.error('agent_run_failed', { ...contextFields(session.taskRef.current?.context), errorCode, errorMessage, mode }).catch(() => {})
+  await options.serverLogger.error('agent_run_failed', { ...contextFields(session.taskRef.current?.context), runId, errorCode, errorMessage, mode }).catch(() => {})
 }
 
 function publicSessionSummary(sessionStore, session, includeMessages = false) {
@@ -565,11 +683,23 @@ async function handleAgentEvents(request, response, options) {
     // buffer to hold the first event batch until the run completes.
     response.flushHeaders?.()
     response.socket?.setNoDelay?.(true)
-    const replay = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
+    const lastEventId = String(request.headers['last-event-id'] || '').trim()
+    const replayCursor = Number.isFinite(Number(lastEventId)) ? Number(lastEventId) : 0
+    // Subscribe before reading the durable log. Otherwise a workflow event
+    // published between the log read and subscribe would be lost forever on a
+    // reconnect.
     const unsubscribe = options.workflowEvents.subscribe(sessionId, response)
+    const persistedReplay = await options.sessionStore.readWorkflowEvents(sessionId, replayCursor).catch(() => [])
+    const replay = persistedReplay.length || lastEventId
+      ? persistedReplay
+      : (Array.isArray(session.workflowEvents) ? session.workflowEvents : [])
     response.write(`event: ready\ndata: ${JSON.stringify({ sessionId, state: session.taskRef.current?.state || session.status })}\n\n`)
-    for (const event of replay) response.write(`event: workflow\ndata: ${JSON.stringify(event)}\n\n`)
-    await options.serverLogger.info('agent_sse_connected', { sessionId, replayedEvents: replay.length })
+    for (const event of replay) {
+      const replayable = event?.event !== WORKFLOW_EVENTS.ASSISTANT_DELTA
+      const id = replayable && Number.isFinite(Number(event?.sequence)) ? `id: ${Number(event.sequence)}\n` : ''
+      response.write(`${id}event: workflow\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    await options.serverLogger.info('agent_sse_connected', { sessionId, replayedEvents: replay.length, replayCursor })
     response.once('close', () => { void options.serverLogger.info('agent_sse_disconnected', { sessionId }) })
     return unsubscribe
   } catch (error) {
@@ -899,18 +1029,21 @@ async function handleAgentContinue(request, response, options) {
       const blockers = task.blockers.length ? `\n当前阻断项：\n- ${task.blockers.join('\n- ')}` : ''
       const message = String(body.message || `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据最终验收结果继续修订当前简历，重新检查、渲染，并等待下一次真实测量。${blockers}`).trim()
       session.executionMode = AGENT_EXECUTION_MODES.PRODUCTION
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', turnId: session.activeTurnId, onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
       sendJson(response, 200, { ok: true, continued: true, sessionId, assistantText: assistantText(turn.result), state: task.state, context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null })
     })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'AGENT_CONTINUE_FAILED'), errorMessage: String(error?.message || error) }
     if (session) {
+      const runId = String(error?.runId || task?.context?.runId || `run-${crypto.randomUUID()}`)
+      const failedTask = { ...session.taskRef.current, runId }
       session.runState = 'failed'
       session.status = session.taskRef.current?.state || 'failed'
       session.lastError = { code: details.errorCode, message: details.errorMessage }
-      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode, ...contextFields(session.taskRef.current?.context) }).catch(() => {})
-      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...session.taskRef.current, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode }).catch(() => {})
+      await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode, ...contextFields(session.taskRef.current?.context), runId }).catch(() => {})
+      await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...failedTask, sessionId: session.sessionId }, { outcome: 'failed', state: session.status, mode: 'measurement_continuation', errorCode: details.errorCode }).catch(() => {})
+      await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...failedTask, sessionId: session.sessionId }, runId, outcome: 'failed', mode: 'measurement_continuation', errorCode: details.errorCode }, options.sessionStore).catch(() => {})
     }
     await options.serverLogger.error('agent_continuation_failed', { ...(task ? contextFields(task.context) : {}), ...details })
     const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'SESSION_INVALID', 'CONTINUATION_RENDER_REQUIRED', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'CONTINUATION_NOT_ALLOWED', 'SOURCE_CHANGED'])
@@ -924,6 +1057,9 @@ async function handleAgentRun(request, response, options) {
   try {
     const body = await readJsonBody(request)
     const message = String(body.message || '').trim()
+    const requestedTurnId = String(body.turnId || '').trim()
+    if (requestedTurnId && !/^turn-[A-Za-z0-9_-]{1,120}$/.test(requestedTurnId)) throw Object.assign(new Error('turnId is invalid'), { code: 'TURN_INVALID' })
+    const turnId = requestedTurnId || `turn-${crypto.randomUUID()}`
     const workspaceInput = await resolveWorkspaceInput(body, options.workspaceRegistry)
     const resumePath = workspaceInput.resumePath
     if (!message) throw Object.assign(new Error('message is required'), { code: 'MESSAGE_REQUIRED' })
@@ -950,13 +1086,13 @@ async function handleAgentRun(request, response, options) {
     }
     await persistSession(options.sessionStore, session)
     const execute = () => withSessionLock(session, async () => {
-      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode, mode: 'user_message', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+      const turn = await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode, mode: 'user_message', turnId, persistUserMessage: true, onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       task = turn.task
-      return { sessionId, executionMode, assistantText: assistantText(turn.result), state: task.state, runState: session.runState, paused: Boolean(turn.paused), context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
+      return { sessionId, turnId, executionMode, assistantText: assistantText(turn.result), state: task.state, runState: session.runState, paused: Boolean(turn.paused), context: contextFields(task.context), draft: task.artifacts.contentVersion ? { contentVersion: task.artifacts.contentVersion } : null, renderPath: session.taskRef.renderRelativePath || null }
     })
     const streamRequested = new URL(request.url, 'http://127.0.0.1').searchParams.get('stream') === '1'
     if (streamRequested) {
-      sendJson(response, 202, { ok: true, accepted: true, sessionId, executionMode, state: session.taskRef.current?.state || session.status, runState: 'running' })
+      sendJson(response, 202, { ok: true, accepted: true, sessionId, turnId, executionMode, state: session.taskRef.current?.state || session.status, runState: 'running' })
       void execute().catch((error) => recordAgentRunFailure(session, error, options).catch(() => {}))
       return
     }
@@ -969,7 +1105,7 @@ async function handleAgentRun(request, response, options) {
     } else {
       await options.serverLogger.error('agent_run_failed', { ...(task ? contextFields(task.context) : {}), ...details })
     }
-    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MESSAGE_REQUIRED', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'SESSION_INVALID', 'SESSION_SCOPE_MISMATCH', 'SOURCE_CHANGED'])
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MESSAGE_REQUIRED', 'TURN_INVALID', 'WORKSPACE_REQUIRED', 'WORKSPACE_INVALID', 'WORKSPACE_MANIFEST_INVALID', 'WORKSPACE_FILE_INVALID', 'WORKSPACE_FILE_NOT_FOUND', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_RESUME_NOT_FOUND', 'DRAFT_EMPTY', 'DRAFT_TOO_LARGE', 'SESSION_INVALID', 'SESSION_SCOPE_MISMATCH', 'SOURCE_CHANGED'])
     sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
   }
 }
@@ -991,7 +1127,7 @@ function scheduleMeasurementContinuation(session, renderId, verification, option
       if (current.state !== 'needs_revision' || String(current.context.renderId || '') !== String(renderId)) return
       const blockers = current.blockers.length ? `\n当前阻断项：\n- ${current.blockers.join('\n- ')}` : ''
       const message = `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据当前验收结果继续修订，不要询问用户确认；重新检查、渲染，并等待下一次真实测量。${blockers}`
-      await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
+      await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', turnId: session.activeTurnId, onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
     }).catch((error) => recordAgentRunFailure(session, error, { ...options, workflowEvents: options.workflowEvents }, 'measurement_continuation').catch(() => {}))
   }, 0)
   return { scheduled: true, budget, round }
@@ -999,10 +1135,20 @@ function scheduleMeasurementContinuation(session, renderId, verification, option
 
 async function handlePreview(request, response, options) {
   try {
-    const sessionId = new URL(request.url, 'http://127.0.0.1').searchParams.get('sessionId') || ''
+    const query = new URL(request.url, 'http://127.0.0.1').searchParams
+    const sessionId = query.get('sessionId') || ''
+    const requestedRenderId = String(query.get('renderId') || '').trim()
     const session = await loadSession(options.sessions, options.sessionStore, sessionId, options.serverLogger)
-    if (!session?.taskRef.renderAbsolutePath) throw Object.assign(new Error('current render was not found'), { code: 'RENDER_NOT_FOUND' })
-    const html = await fs.readFile(session.taskRef.renderAbsolutePath, 'utf8')
+    if (!session?.taskRef?.current) throw Object.assign(new Error('current render was not found'), { code: 'RENDER_NOT_FOUND' })
+    const currentRenderId = String(session.taskRef.current.context?.renderId || '').trim()
+    const renderId = requestedRenderId || currentRenderId
+    if (!renderId || !/^[A-Za-z0-9_.@-]+$/.test(renderId)) throw Object.assign(new Error('renderId is invalid'), { code: 'RENDER_NOT_FOUND' })
+    const taskId = String(session.taskRef.current.context?.taskId || '').trim()
+    const currentPath = requestedRenderId && requestedRenderId === currentRenderId ? session.taskRef.renderAbsolutePath : ''
+    const candidatePath = currentPath || path.resolve(session.workspaceRoot, '.cvagent', 'renders', taskId, renderId, 'preview.html')
+    const safeRoot = path.resolve(session.workspaceRoot, '.cvagent', 'renders', taskId)
+    if (!candidatePath.startsWith(`${safeRoot}${path.sep}`)) throw Object.assign(new Error('render path is invalid'), { code: 'RENDER_NOT_FOUND' })
+    const html = await fs.readFile(candidatePath, 'utf8')
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" })
     response.end(html)
   } catch (error) {

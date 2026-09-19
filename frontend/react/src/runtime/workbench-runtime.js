@@ -32,7 +32,9 @@ const liveState = {
   measurementPending: false,
   measuredRenderKey: '',
   agentEvents: [],
+  agentTurnId: '',
   agentRunId: '',
+  runState: 'idle',
   agentRunActive: false,
   agentRunError: '',
   streamingAssistantText: '',
@@ -47,6 +49,7 @@ let measurementInFlightKey = ''
 let workflowEventSource = null
 let workflowEventSessionId = ''
 let activeRunSyncPromise = null
+let queuedRunSyncOptions = null
 let lastWorkflowSseErrorAt = 0
 let previewResizeObserver = null
 let previewFitFrame = 0
@@ -54,7 +57,9 @@ let previewFitFrame = 0
 const A4_PREVIEW_SIZE = Object.freeze({ width: 794, height: 1123 })
 
 function previewUrl() {
-  return activeSessionId ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}` : ''
+  return activeSessionId && liveState.renderId
+    ? `/api/agent/preview?sessionId=${encodeURIComponent(activeSessionId)}&renderId=${encodeURIComponent(liveState.renderId)}`
+    : ''
 }
 
 function templatePreviewUrl(templateId) {
@@ -70,6 +75,7 @@ function applyTemplateContext(context = {}) {
 }
 
 function workflowEventKey(event) {
+  if (Number.isFinite(Number(event?.sequence))) return `sequence:${Number(event.sequence)}`
   return [
     event?.event,
     event?.timestamp,
@@ -94,8 +100,13 @@ function mergeWorkflowEvents(...sources) {
     }
   }
   return [...events.values()]
-    .sort((left, right) => String(left.timestamp || '').localeCompare(String(right.timestamp || '')))
-    .slice(-240)
+    .sort((left, right) => {
+      const leftSequence = Number(left.sequence)
+      const rightSequence = Number(right.sequence)
+      if (Number.isFinite(leftSequence) && Number.isFinite(rightSequence) && leftSequence !== rightSequence) return leftSequence - rightSequence
+      return String(left.timestamp || '').localeCompare(String(right.timestamp || ''))
+    })
+    .slice(-2000)
 }
 
 async function refreshWorkspaceTemplates({ rerender = false } = {}) {
@@ -129,9 +140,16 @@ function connectWorkflowEvents() {
     let payload
     try { payload = JSON.parse(event.data) } catch { return }
     if (payload.sessionId !== liveState.sessionId) return
+    // Replay and live delivery can overlap during reconnect. Merge by the
+    // durable event identity before mutating run state, otherwise a replayed
+    // run-start event would clear the currently visible streaming answer.
+    const eventKey = workflowEventKey(payload)
+    if (liveState.agentEvents.some((item) => workflowEventKey(item) === eventKey)) return
     liveState.agentEvents = mergeWorkflowEvents(liveState.agentEvents, [payload])
     if (payload.event === 'agent_run_started') {
+      liveState.agentTurnId = payload.turnId || liveState.agentTurnId
       liveState.agentRunId = payload.runId || ''
+      liveState.runState = 'running'
       liveState.agentRunActive = true
       liveState.agentRunError = ''
       liveState.streamingAssistantText = ''
@@ -157,9 +175,11 @@ function connectWorkflowEvents() {
       liveState.measuredRenderKey = ''
       liveState.workflowState = payload.state || 'rendered'
       syncPreviewFrames()
+      refreshReactPanes()
       updateHeader()
     }
     if (payload.event === 'agent_run_paused') {
+      liveState.runState = 'waiting_for_measurement'
       liveState.agentRunActive = false
       liveState.agentRunError = ''
       updateSessionStatus('等待 A4 测量')
@@ -168,13 +188,21 @@ function connectWorkflowEvents() {
       liveState.agentRunActive = false
       const failed = payload.outcome === 'failed'
       if (failed) {
+        liveState.runState = 'failed'
         liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
         updateSessionStatus('Agent 执行失败')
       } else if (payload.outcome === 'paused') {
+        liveState.runState = 'waiting_for_measurement'
         liveState.agentRunError = ''
         updateSessionStatus('等待 A4 测量')
+      } else {
+        liveState.runState = 'idle'
+        liveState.agentRunError = ''
       }
-      void syncActiveSessionFromServer({ preserveLiveTurn: failed })
+      void syncActiveSessionFromServer({ preserveLiveTurn: failed || payload.outcome === 'paused' })
+    }
+    if (['artifact_written', 'render_succeeded', 'measurement_received', 'verification_passed', 'verification_blocked', 'template_select', 'template_restore', 'presentation_update', 'template_autotune'].includes(payload.event)) {
+      void syncActiveSessionFromServer({ preserveLiveTurn: liveState.agentRunActive })
     }
     if (payload.event === 'tool_call_succeeded' && ['template_copy', 'template_save', 'template_restore'].includes(payload.toolName)) {
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
@@ -184,7 +212,13 @@ function connectWorkflowEvents() {
 }
 
 async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
-  if (!liveState.sessionId || activeRunSyncPromise) return activeRunSyncPromise
+  if (!liveState.sessionId) return null
+  if (activeRunSyncPromise) {
+    queuedRunSyncOptions = {
+      preserveLiveTurn: Boolean(queuedRunSyncOptions?.preserveLiveTurn || preserveLiveTurn),
+    }
+    return activeRunSyncPromise
+  }
   const localMessages = liveState.messages
   const localStreamingAssistantText = liveState.streamingAssistantText
   const localStreamingMessageId = liveState.streamingMessageId
@@ -208,9 +242,13 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
       liveState.workflowState = body.state || session.status || liveState.workflowState
       liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
       liveState.measurement = session.taskRef?.current?.measurements || null
+      liveState.agentTurnId = session.activeTurnId || liveState.agentTurnId
       liveState.agentRunActive = session.runState === 'running'
+      liveState.runState = session.runState || 'idle'
+      if (session.runState === 'failed') liveState.agentRunError = session.lastError?.message || liveState.agentRunError || '本轮 Agent 执行失败'
+      else if (!preserveLiveTurn) liveState.agentRunError = ''
       if (preserveLiveTurn) {
-        liveState.agentRunActive = false
+        liveState.agentRunActive = liveState.agentRunActive && session.runState === 'running'
         liveState.streamingAssistantText = localStreamingAssistantText
         liveState.streamingMessageId = localStreamingMessageId
       } else if (!liveState.agentRunActive) {
@@ -219,11 +257,13 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
         liveState.agentRunId = ''
       }
       renderAgentChat({ scrollToBottom: true })
+      refreshReactPanes()
       syncPreviewFrames()
       updateHeader()
       if (liveState.agentRunError) updateSessionStatus('Agent 执行失败')
       else if (session.runState === 'waiting_for_measurement') updateSessionStatus('等待 A4 测量')
       else if (liveState.agentRunActive) updateSessionStatus('Agent 处理中')
+      else updateSessionStatus(currentSessionData().status)
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
       void loadSessionsForWorkspace()
     } catch (error) {
@@ -232,7 +272,10 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
       updateSessionStatus('Agent 状态同步失败')
       renderAgentChat({ scrollToBottom: true })
     } finally {
+      const nextOptions = queuedRunSyncOptions
+      queuedRunSyncOptions = null
       activeRunSyncPromise = null
+      if (nextOptions) void syncActiveSessionFromServer(nextOptions)
     }
   })()
   return activeRunSyncPromise
@@ -270,6 +313,7 @@ function measurePreviewFrame(frame, identity = {}) {
         liveState.measuredRenderKey = key
         liveState.measurement = body.measurement || null
         liveState.workflowState = body.state || liveState.workflowState
+        liveState.runState = body.runState || (body.autoContinuation?.scheduled ? 'waiting_for_measurement' : 'idle')
         const blockers = body.verification?.blockers || []
         liveState.blockerCount = blockers.length
         updateHeader()
@@ -285,7 +329,9 @@ function measurePreviewFrame(frame, identity = {}) {
         if (body.state === 'needs_revision' && !requiresInitialIntake && !body.autoContinuation?.scheduled && !body.autoContinuation?.exhausted) showToast('真实 A4 测量未通过，请进入制作模式继续调整')
       })
       .catch((error) => {
-        if (frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId) showToast(`预览测量失败：${errorText(error)}`)
+        const current = frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId
+        const activeRun = ['running', 'waiting_for_measurement'].includes(liveState.runState)
+        if (current && activeRun) showToast(`预览测量失败：${errorText(error)}`)
       })
       .finally(() => {
         if (measurementInFlightKey === key) measurementInFlightKey = ''
@@ -406,9 +452,16 @@ function syncTemplatePreviewFrames() {
 
 function currentSessionData() {
   if (!liveState.workspace) return { title: '选择工作区', status: '等待连接', meta: '选择工作区后加载 resume.md' }
+  const executionStatus = liveState.agentRunError
+    ? 'Agent 执行失败'
+    : liveState.agentRunActive
+      ? 'Agent 处理中'
+      : liveState.runState === 'waiting_for_measurement'
+        ? '等待 A4 测量'
+        : ''
   return {
     title: liveState.workspace.name || '未命名工作区',
-    status: liveState.workflowState || '已连接',
+    status: executionStatus || liveState.workflowState || '已连接',
     meta: `${liveState.resumePath} · ${liveState.templateName || liveState.templateId} · A4`,
   }
 }
@@ -461,6 +514,9 @@ function renderWorkspaceOptions(workspaces) {
 
 function sessionStateText(session) {
   const task = session?.taskRef?.current
+  if (session?.runState === 'failed') return 'Agent 执行失败'
+  if (session?.runState === 'running') return 'Agent 处理中'
+  if (session?.runState === 'waiting_for_measurement') return '等待 A4 测量'
   const state = task?.state || session?.status || 'idle'
   const measurement = task?.measurements
   if (state === 'accepted') return `验收通过 · ${measurement?.pageCount || 1} 页`
@@ -536,9 +592,11 @@ async function restoreSession(sessionId) {
     liveState.draftContent = body.draft?.content || liveState.sourceContent
     liveState.messages = Array.isArray(session.messages) ? session.messages : []
     liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
+    liveState.agentTurnId = session.activeTurnId || ''
     liveState.agentRunActive = false
     liveState.agentRunId = ''
-    liveState.agentRunError = ''
+    liveState.runState = session.runState || 'idle'
+    liveState.agentRunError = session.runState === 'failed' ? (session.lastError?.message || '本轮 Agent 执行失败') : ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
     liveState.presentation = body.presentation || null
@@ -575,8 +633,10 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.workspaceId = workspace.id
   liveState.sessionId = ''
   liveState.agentEvents = []
+  liveState.agentTurnId = ''
   liveState.agentRunActive = false
   liveState.agentRunId = ''
+  liveState.runState = 'idle'
   liveState.agentRunError = ''
   liveState.streamingAssistantText = ''
   liveState.streamingMessageId = ''
@@ -593,8 +653,10 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.draftContent = liveState.sourceContent
     liveState.messages = Array.isArray(body.messages) ? body.messages : []
     liveState.agentEvents = Array.isArray(body.workflowEvents) ? body.workflowEvents : []
+    liveState.agentTurnId = body.session?.activeTurnId || ''
     liveState.agentRunActive = false
     liveState.agentRunId = ''
+    liveState.runState = 'idle'
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
@@ -920,10 +982,47 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character])
 }
 
+function createTurnId() {
+  const uuid = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return `turn-${uuid}`
+}
+
+function eventsWithStreamingFallback() {
+  const events = Array.isArray(liveState.agentEvents) ? [...liveState.agentEvents] : []
+  const text = String(liveState.streamingAssistantText || '')
+  const messageId = String(liveState.streamingMessageId || '')
+  if (!text.trim() || !messageId) return events
+  const runId = String(liveState.agentRunId || 'live-stream')
+  const turnId = String(liveState.agentTurnId || '')
+  const sameMessage = (event) => event?.event === 'assistant_delta' && String(event.messageId || '') === messageId && (!event.runId || String(event.runId) === runId)
+  const existingText = events.filter(sameMessage).map((event) => String(event.delta || '')).join('')
+  if (existingText === text) return events
+  const hasRunStarted = events.some((event) => event.event === 'agent_run_started' && (!event.runId || String(event.runId) === runId))
+  const hasMessageStarted = events.some((event) => event.event === 'assistant_message_started' && String(event.messageId || '') === messageId)
+  const prefix = []
+  const timestamp = new Date().toISOString()
+  if (!hasRunStarted) prefix.push({ event: 'agent_run_started', sessionId: liveState.sessionId, turnId, runId, timestamp })
+  if (!hasMessageStarted) prefix.push({ event: 'assistant_message_started', sessionId: liveState.sessionId, turnId, runId, messageId, timestamp })
+  const missing = text.slice(existingText.length)
+  const result = events.filter((event) => !sameMessage(event))
+  const lastDeltaIndex = events.reduce((last, event, index) => sameMessage(event) ? index : last, -1)
+  if (!missing) return [...prefix, ...events]
+  if (lastDeltaIndex >= 0) {
+    return [...prefix, ...events.map((event, index) => {
+      if (!sameMessage(event)) return event
+      return index === lastDeltaIndex ? { ...event, delta: `${event.delta || ''}${missing}` } : event
+    })]
+  }
+  const anchorIndex = events.findIndex((event) => event.event === 'assistant_message_started' && String(event.messageId || '') === messageId)
+  const fallback = { event: 'assistant_delta', sessionId: liveState.sessionId, turnId, runId, messageId, delta: text, timestamp }
+  if (anchorIndex >= 0) return [...events.slice(0, anchorIndex + 1), fallback, ...events.slice(anchorIndex + 1)]
+  return [...prefix, ...result, fallback]
+}
+
 function renderChatRefined() {
   const timeline = window.cvAgentChat.renderTimeline({
     messages: (Array.isArray(liveState.messages) ? liveState.messages : []).map((message) => ({ ...message, content: chatMessageText(message) })),
-    events: liveState.agentEvents,
+    events: eventsWithStreamingFallback(),
     sessionReady: Boolean(liveState.sessionId),
     activeRun: liveState.agentRunActive,
     error: liveState.agentRunError,
@@ -1019,8 +1118,7 @@ async function applyPresentationTuning(valuesOverride = null) {
   }
 }
 
-function renderWorkbench() {
-  $('#routeContent').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div id="a4PaneMount" data-testid="a4-pane-root"></div></section></div></div>`
+function refreshReactPanes() {
   const editorMount = $('#editorPaneMount')
   if (editorMount && window.CVAgentReact?.mountMarkdownPane) {
     window.CVAgentReact.mountMarkdownPane(editorMount, {
@@ -1041,6 +1139,11 @@ function renderWorkbench() {
       onOpenFullPreview: () => renderRoute('preview'),
     })
   }
+}
+
+function renderWorkbench() {
+  $('#routeContent').innerHTML = `<div class="workbench-view"><div class="workbench-split"><section class="editor-pane" aria-label="Markdown 编辑区">${renderEditor()}</section><div class="resize-handle resize-editor" data-resize="editor" role="separator" aria-label="调整 Markdown 与预览宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="900" tabindex="0"></div><section class="direct-preview-pane" aria-label="A4 预览区"><div id="a4PaneMount" data-testid="a4-pane-root"></div></section></div></div>`
+  refreshReactPanes()
   window.setTimeout(() => {
     syncPreviewFrames()
     bindPreviewFit()
@@ -1379,12 +1482,6 @@ async function renderVersions() {
   }
 }
 
-function appendAgentResponse(text) {
-  if (text) liveState.messages.push({ role: 'assistant', content: text })
-  liveState.agentRunActive = false
-  renderAgentChat({ scrollToBottom: true })
-}
-
 async function saveCurrentVersion() {
   if (!liveState.sessionId) {
     showToast('请先选择工作区并加载简历')
@@ -1433,22 +1530,24 @@ function bindChat() {
       showToast('请先选择工作区并加载简历')
       return
     }
-    liveState.messages.push({ role: 'user', content: value })
+    const turnId = createTurnId()
+    liveState.messages.push({ role: 'user', content: value, turnId, messageId: `user-${turnId}`, timestamp: new Date().toISOString() })
     input.value = ''
     liveState.agentRunActive = true
+    liveState.agentTurnId = turnId
     liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
     renderAgentChat({ scrollToBottom: true })
     updateSessionStatus('Agent 处理中')
-    showToast('已发送，Agent 正在处理当前会话')
-    void api.post('/api/agent/run?stream=1', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value })
+    void api.post('/api/agent/run?stream=1', { sessionId: liveState.sessionId, workspaceId: liveState.workspaceId, message: value, turnId })
       .then(({ body }) => {
         if (body.accepted === true) {
           // The response only acknowledges scheduling. All visible progress,
           // including tools and answer deltas, arrives through the session SSE.
           liveState.agentRunActive = true
+          liveState.runState = body.runState || 'running'
           renderAgentChat({ scrollToBottom: true })
           return
         }
@@ -1462,8 +1561,9 @@ function bindChat() {
         }
         if (body.draft?.contentVersion) liveState.draftContent = $('#resumeEditor')?.value || liveState.draftContent
         const assistantMessage = body.assistantText || 'Agent 已完成处理，请查看当前草稿和预览。'
-        liveState.messages.push({ role: 'assistant', content: assistantMessage })
+        liveState.messages.push({ role: 'assistant', content: assistantMessage, turnId: body.turnId || turnId, messageId: `assistant-${body.turnId || turnId}`, timestamp: new Date().toISOString() })
         liveState.agentRunActive = false
+        liveState.runState = body.runState || 'idle'
         liveState.agentRunError = ''
         liveState.streamingAssistantText = ''
         liveState.streamingMessageId = ''
@@ -1475,6 +1575,7 @@ function bindChat() {
       })
       .catch((error) => {
         liveState.agentRunActive = false
+        liveState.runState = 'failed'
         liveState.agentRunError = errorText(error)
         renderAgentChat({ scrollToBottom: true })
         updateSessionStatus('Agent 执行失败')

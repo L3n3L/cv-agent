@@ -16,6 +16,9 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
     template_versions: '读取模板修订',
     template_restore: '恢复模板修订',
     workspace_materials_list: '读取工作区材料',
+    workspace_material_read: '读取材料',
+    read_file: '读取文件',
+    write_file: '写入文件',
     presentation_update: '调整版式参数',
     presentation_suggest: '生成版式调整建议',
     resume_write: '写入隔离草稿',
@@ -228,30 +231,47 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
   function normalizedMessages(messages) {
     return (Array.isArray(messages) ? messages : [])
       .filter((message) => ['user', 'assistant'].includes(message?.role))
-      .map((message) => ({ role: message.role, content: message.content, timestamp: message.timestamp }))
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+        turnId: message.turnId,
+        messageId: message.messageId || message.id,
+        runId: message.runId,
+      }))
       .filter((message) => String(message.content || '').trim())
   }
 
   function eventGroups(events) {
     const groups = []
     const byKey = new Map()
-    const runSequences = new Map()
-    const activeKeys = new Map()
+    const legacySequences = new Map()
+    const legacyActiveKeys = new Map()
     let agentRunStarted = false
     for (const event of Array.isArray(events) ? events : []) {
       if (event.event === 'agent_run_started') agentRunStarted = true
       // Bootstrap, automatic A4 measurement, and background verification are
       // system activity. They belong to the audit log, not the conversation.
       if (!agentRunStarted) continue
-      const baseKey = String(event.runId || event.taskId || 'current')
-      if (event.event === 'agent_run_started') {
-        const sequence = (runSequences.get(baseKey) || 0) + 1
-        runSequences.set(baseKey, sequence)
-        activeKeys.set(baseKey, `${baseKey}:${sequence}`)
+      const stableTurnId = String(event.turnId || '').trim()
+      const stableRunId = String(event.runId || '').trim()
+      const baseKey = stableTurnId || stableRunId || String(event.taskId || 'current')
+      // New events carry a per-turn runId. A paused production turn may emit
+      // several agent_run_started records while it waits for measurement and
+      // resumes; those records must remain one chronological workflow card.
+      // Older persisted events have no runId, so retain the old start-based
+      // split only for that legacy shape.
+      let key = baseKey
+      if (!stableTurnId && !stableRunId) {
+        if (event.event === 'agent_run_started') {
+          const sequence = (legacySequences.get(baseKey) || 0) + 1
+          legacySequences.set(baseKey, sequence)
+          legacyActiveKeys.set(baseKey, `${baseKey}:${sequence}`)
+        }
+        key = legacyActiveKeys.get(baseKey) || `${baseKey}:0`
       }
-      const key = activeKeys.get(baseKey) || `${baseKey}:0`
       if (!byKey.has(key)) {
-        const group = { key, runId: baseKey, events: [] }
+        const group = { key, turnId: stableTurnId || '', runId: stableRunId || baseKey, events: [] }
         byKey.set(key, group)
         groups.push(group)
       }
@@ -301,13 +321,33 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
     return `<article class="message agent-message timeline-assistant" aria-label="Agent消息"><div class="message-meta"><span>Agent</span><time>${escapeHtml(readableTime(entry.timestamp))}</time></div><div class="message-content markdown-body">${renderMarkdown(text)}${caret}</div></article>`
   }
 
+  function renderToolGroup(entries, status, index, { activeRun = false } = {}) {
+    const statusText = statusLabels[status] || status
+    const isActive = activeRun && status === 'running'
+    return `<details class="tool-group run-trace ${escapeHtml(status)}"${isActive ? ' data-active="true"' : ''}><summary class="run-label"><b>工具过程</b><span>${entries.length} 项工具 · ${escapeHtml(statusText)}</span></summary><div class="tool-group-entries">${entries.map((entry) => renderToolEntry(entry)).join('')}</div></details>`
+  }
+
   function renderRunGroup(group, index, { activeRun = false } = {}) {
     const status = runEventStatus(group.events)
     const entries = projectWorkflowTimeline(group.events)
-    const statusText = statusLabels[status] || status
-    const toolCount = entries.filter((entry) => entry.kind === 'tool').length
-    const runRows = entries.map((entry) => entry.kind === 'tool' ? renderToolEntry(entry) : renderAssistantEntry(entry, activeRun)).join('') || '<div class="tool-empty">正在处理</div>'
-    return `<section class="tool-group run-trace ${escapeHtml(status)}" aria-label="Agent 工作流" data-run-index="${index}"><div class="run-label"><b>Agent 工作流</b><span>${toolCount ? `${toolCount} 项工具 · ` : ''}${escapeHtml(statusText)}</span></div>${runRows}</section>`
+    const rows = []
+    let toolEntries = []
+    const flushTools = () => {
+      if (!toolEntries.length) return
+      rows.push(renderToolGroup(toolEntries, status, index, { activeRun }))
+      toolEntries = []
+    }
+    entries.forEach((entry) => {
+      if (entry.kind === 'tool') {
+        toolEntries.push(entry)
+        return
+      }
+      flushTools()
+      rows.push(renderAssistantEntry(entry, activeRun))
+    })
+    flushTools()
+    if (!rows.length) rows.push('<div class="tool-empty">正在处理</div>')
+    return `<section class="run-trace ${escapeHtml(status)}" aria-label="Agent 工作流" data-run-index="${index}">${rows.join('')}</section>`
   }
 
   function renderInterleavedTimeline(messages, groups, { activeRun = false } = {}) {
@@ -316,52 +356,47 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
 
     // A completed turn is represented in two stores: the append-only event
     // rail (needed for live order) and the final session message snapshot.
-    // Once the event rail has the assistant text, the snapshot must not print
-    // that same text a second time. User messages remain snapshot-owned.
-    // A conversation turn starts with a user message. Insert the matching
-    // workflow group before that turn's final Agent answer, so tool work stays
-    // in the same reading order as the conversation instead of being appended
-    // after every message.
+    // The explicit turnId is the only join key. Never pair a workflow group
+    // with a message by array position: old workflows can be replayed, a
+    // continuation can share a turn, and a failed run may have no assistant
+    // snapshot at all.
     const segments = []
-    let segment = []
-    normalized.forEach((message) => {
-      if (message.role === 'user' && segment.length) {
-        segments.push(segment)
-        segment = []
-      }
-      segment.push(message)
+    normalized.forEach((message) => segments.push(message))
+    const groupsByTurn = new Map()
+    groups.forEach((group, index) => {
+      const key = String(group.turnId || '').trim()
+      if (!key) return
+      const list = groupsByTurn.get(key) || []
+      list.push({ group, index })
+      groupsByTurn.set(key, list)
     })
-    if (segment.length) segments.push(segment)
-
+    const renderedGroups = new Set()
     const content = []
-    let groupIndex = 0
     let messageIndex = 0
-    segments.forEach((turn) => {
-      const assistantIndexes = turn.reduce((indexes, message, index) => {
-        if (message.role === 'assistant') indexes.push(index)
-        return indexes
-      }, [])
-      const insertionIndex = assistantIndexes.length ? assistantIndexes.at(-1) : turn.length
-      const groupForTurn = groupIndex < groups.length ? groups[groupIndex] : null
-      const groupRendersAssistant = groupForTurn ? workflowGroupHasAssistantText(groupForTurn) : false
-
-      turn.forEach((message, index) => {
-        if (index === insertionIndex && groupIndex < groups.length) {
-          content.push(renderRunGroup(groups[groupIndex], groupIndex, { activeRun: activeRun && groupIndex === groups.length - 1 }))
-          groupIndex += 1
-        }
-        const isDuplicateEventAssistant = groupRendersAssistant && message.role === 'assistant'
-        if (!isDuplicateEventAssistant) content.push(renderMessage(message, messageIndex))
+    segments.forEach((message) => {
+      const turnId = String(message.turnId || '').trim()
+      if (message.role === 'user') {
+        content.push(renderMessage(message, messageIndex))
+        const turnGroups = groupsByTurn.get(turnId) || []
+        turnGroups.forEach(({ group, index }) => {
+          content.push(renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
+          renderedGroups.add(index)
+        })
         messageIndex += 1
-      })
+        return
+      }
+      const turnGroups = groupsByTurn.get(turnId) || []
+      const groupRendersAssistant = turnGroups.some(({ group }) => workflowGroupHasAssistantText(group))
+      if (!groupRendersAssistant) content.push(renderMessage(message, messageIndex))
+      messageIndex += 1
     })
 
-    // Keep unusual/bootstrap events visible even when the session has fewer
-    // message turns than persisted workflow runs.
-    while (groupIndex < groups.length) {
-      content.push(renderRunGroup(groups[groupIndex], groupIndex, { activeRun: activeRun && groupIndex === groups.length - 1 }))
-      groupIndex += 1
-    }
+    // Legacy sessions without turnId and diagnostics without a matching
+    // snapshot remain visible, but are never inserted by ordinal position.
+    groups.forEach((group, index) => {
+      if (renderedGroups.has(index)) return
+      content.push(renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
+    })
     return content
   }
 

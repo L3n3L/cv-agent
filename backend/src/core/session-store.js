@@ -9,7 +9,10 @@ const SNAPSHOT_NAME = 'session.json'
 const MESSAGES_NAME = 'messages.ndjson'
 const EVENTS_NAME = 'events.ndjson'
 const SCHEMA_VERSION = 1
-const MAX_WORKFLOW_EVENTS = 240
+// Keep enough durable context for a long production run to retain its
+// agent_run_started boundary. The full audit log remains in events.ndjson;
+// this cap only bounds the snapshot sent with /api/session.
+const MAX_WORKFLOW_EVENTS = 2000
 
 function assertSessionId(sessionId) {
   const value = String(sessionId || '').trim()
@@ -21,7 +24,7 @@ function safeMessage(message) {
   if (message === null || typeof message !== 'object') return { role: 'user', content: String(message ?? '') }
   const role = message.role || (message.type === 'human' ? 'user' : message.type === 'ai' ? 'assistant' : message.type === 'tool' ? 'tool' : message.type)
   const result = { role: String(role || 'assistant'), content: message.content ?? '' }
-  for (const key of ['name', 'tool_call_id', 'tool_calls', 'additional_kwargs', 'response_metadata']) {
+  for (const key of ['id', 'messageId', 'turnId', 'runId', 'timestamp', 'sequence', 'name', 'tool_call_id', 'tool_calls', 'additional_kwargs', 'response_metadata']) {
     if (message[key] !== undefined) result[key] = message[key]
   }
   return result
@@ -33,7 +36,7 @@ function safeMessages(messages) {
 
 function safeWorkflowEvent(event) {
   if (!event || typeof event !== 'object') return null
-  const allowed = ['event', 'timestamp', 'sessionId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'executionMode', 'continuationRound', 'continuationBudget', 'outcome', 'durationMs', 'assistantChars', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reason', 'reasoningSummary', 'delta', 'messageId']
+  const allowed = ['event', 'timestamp', 'sequence', 'sessionId', 'turnId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'executionMode', 'continuationRound', 'continuationBudget', 'outcome', 'durationMs', 'assistantChars', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reason', 'reasoningSummary', 'delta', 'messageId']
   const value = {}
   for (const key of allowed) {
     if (event[key] !== undefined && event[key] !== null) value[key] = event[key]
@@ -60,6 +63,8 @@ function sessionSnapshot(session) {
     templateRevision: session.templateRevision || null,
     sourceHash: session.sourceHash || null,
     executionMode: session.executionMode || 'chat',
+    activeTurnId: session.activeTurnId || null,
+    workflowSequence: Math.max(0, Number(session.workflowSequence) || 0),
     automation: {
       continuationCount: Math.max(0, Number(session.automation?.continuationCount) || 0),
       continuationBudget: Math.max(0, Number(session.automation?.continuationBudget) || 0),
@@ -93,6 +98,8 @@ function hydrateSession(snapshot) {
     },
     messages: safeMessages(snapshot.messages),
     workflowEvents: safeWorkflowEvents(snapshot.workflowEvents),
+    workflowSequence: Math.max(0, Number(snapshot.workflowSequence) || 0),
+    activeTurnId: snapshot.activeTurnId || null,
     executionMode: snapshot.executionMode || 'chat',
     automation: {
       continuationCount: Math.max(0, Number(snapshot.automation?.continuationCount) || 0),
@@ -176,6 +183,18 @@ export function createSessionStore(options = {}) {
     return hydrateSession({ ...snapshot, messages: messages.length ? messages : snapshot.messages || [] })
   }
 
+  async function readWorkflowEvents(sessionId, afterSequence = 0) {
+    const safeId = assertSessionId(sessionId)
+    const text = await fs.readFile(path.join(directoryFor(safeId), EVENTS_NAME), 'utf8').catch((error) => {
+      if (error?.code === 'ENOENT') return ''
+      throw error
+    })
+    const cursor = Math.max(0, Number(afterSequence) || 0)
+    return text.split(/\r?\n/).filter(Boolean).map((line) => {
+      try { return safeWorkflowEvent(JSON.parse(line)) } catch { return null }
+    }).filter((event) => event && Number.isFinite(Number(event.sequence)) && Number(event.sequence) > cursor).sort((left, right) => Number(left.sequence) - Number(right.sequence))
+  }
+
   async function list(filters = {}) {
     const entries = await fs.readdir(root, { withFileTypes: true }).catch((error) => {
       if (error?.code === 'ENOENT') return []
@@ -197,6 +216,7 @@ export function createSessionStore(options = {}) {
     root,
     save,
     load,
+    readWorkflowEvents,
     list,
     summary,
   }

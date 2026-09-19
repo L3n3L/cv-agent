@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import vm from 'node:vm'
 
 const frontendRoot = path.resolve(import.meta.dirname, '..', '..', 'frontend')
 
@@ -71,6 +72,7 @@ test('frontend route changes reset scroll and SSE proxy tolerates client disconn
   assert.match(app, /function renderRoute\(route\) \{[\s\S]*?\$\('#routeView'\)\.scrollTop = 0/)
   assert.match(app, /async function renderTemplates\(\) \{[\s\S]*?const viewport = \$\('#routeView'\)[\s\S]*?viewport\.scrollTop = 0/)
   assert.match(proxy, /if \(response\.headersSent \|\| response\.destroyed \|\| response\.writableEnded \|\| request\.aborted\)/)
+  assert.match(proxy, /'last-event-id'/)
   assert.match(proxy, /proxyLog\('info', 'api_proxy_client_closed'/)
 })
 
@@ -80,12 +82,44 @@ test('Agent chat keeps one state reducer for streaming, replay, and failed-run r
   const state = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
   const server = await fs.readFile(path.join(frontendRoot, '..', 'backend', 'src', 'server.js'), 'utf8')
   assert.match(app, /isSameAgentRun\(payload, liveState\.agentRunId\)/)
-  assert.match(app, /syncActiveSessionFromServer\(\{ preserveLiveTurn: failed \}\)/)
+  assert.match(app, /syncActiveSessionFromServer\(\{ preserveLiveTurn: failed \|\| payload\.outcome === 'paused' \}\)/)
+  assert.match(app, /queuedRunSyncOptions/)
+  assert.match(app, /eventsWithStreamingFallback/)
   assert.match(app, /reportClientEvent\?\.\('agent_sse_error'/)
   assert.match(chat, /runEventStatus\(group\.events\)/)
   assert.match(state, /export function mergeSessionMessages/)
-  assert.match(server, /const replay = Array\.isArray\(session\.workflowEvents\)/)
+  assert.match(server, /readWorkflowEvents\(sessionId, replayCursor\)/)
+  assert.match(server, /Subscribe before reading the durable log/)
   assert.match(server, /agent_sse_connected/)
+})
+
+test('Agent chat keeps paused and resumed phases in one run timeline', async () => {
+  const chatSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat.js'), 'utf8')
+  const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
+  assert.match(chatSource, /paused production turn may emit[\s\S]*?remain one chronological workflow card/)
+  assert.match(chatSource, /const stableRunId = String\(event\.runId \|\| ''\)\.trim\(\)/)
+  assert.match(chatSource, /if \(!stableTurnId && !stableRunId\) \{[\s\S]*?legacySequences/)
+
+  const context = vm.createContext({ window: {}, console })
+  vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  const html = context.window.cvAgentChat.renderTimeline({
+    messages: [{ role: 'user', content: '检查简历' }, { role: 'assistant', content: '已完成检查' }],
+    events: [
+      { event: 'agent_run_started', runId: 'run-1' },
+      { event: 'tool_call_started', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read' },
+      { event: 'agent_run_finished', runId: 'run-1', outcome: 'paused' },
+      { event: 'agent_run_started', runId: 'run-1' },
+      { event: 'tool_call_succeeded', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read', durationMs: 10 },
+      { event: 'agent_run_finished', runId: 'run-1', outcome: 'success' },
+    ],
+    sessionReady: true,
+  })
+  assert.equal((html.match(/aria-label="Agent 工作流"/g) || []).length, 1)
+  assert.match(html, /<details class="tool-group run-trace done">/)
+  assert.doesNotMatch(html, /<details class="tool-group run-trace done" open>/)
+  assert.equal((html.match(/读取当前简历/g) || []).length, 1)
+  assert.match(html, /已完成检查/)
 })
 
 test('React/Vite shell owns the DOM contract and bundled runtime boundary', async () => {

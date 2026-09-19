@@ -32,9 +32,13 @@ export function projectWorkflowTimeline(events) {
     const parsed = Date.parse(String(value || ''))
     return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
   }
-  const ensure = (key, entry) => {
+  const eventOrder = (event, fallback) => {
+    const sequence = Number(event?.sequence)
+    return Number.isFinite(sequence) ? sequence : fallback
+  }
+  const ensure = (key, entry, event) => {
     if (!byKey.has(key)) {
-      byKey.set(key, { ...entry, sequence: sequence += 1 })
+      byKey.set(key, { ...entry, sequence: sequence += 1, firstEventOrder: eventOrder(event, sequence) })
       entries.push(byKey.get(key))
     }
     return byKey.get(key)
@@ -52,7 +56,7 @@ export function projectWorkflowTimeline(events) {
         durationMs: null,
         detail: '',
         summary: null,
-      })
+      }, event)
       row.timestamp ||= event.timestamp || ''
       row.durationMs = event.durationMs ?? row.durationMs
       row.detail = event.errorCode || row.detail
@@ -70,14 +74,14 @@ export function projectWorkflowTimeline(events) {
         text: '',
         timestamp: event.timestamp || '',
         state: 'running',
-      })
+      }, event)
       row.timestamp ||= event.timestamp || ''
       if (type === 'assistant_delta') row.text += String(event.delta || '')
       if (type === 'assistant_message_finished') row.state = 'done'
     }
   }
   return entries
-    .sort((left, right) => timestampValue(left.timestamp) - timestampValue(right.timestamp) || left.sequence - right.sequence)
+    .sort((left, right) => left.firstEventOrder - right.firstEventOrder || timestampValue(left.timestamp) - timestampValue(right.timestamp) || left.sequence - right.sequence)
 }
 
 export function workflowGroupHasAssistantText(group) {

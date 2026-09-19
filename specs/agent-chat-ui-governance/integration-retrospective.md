@@ -117,7 +117,7 @@ SSE 收到 `agent_run_finished(outcome=failed)` 时只设置了 `agentRunError`�
 - 增加 `agent_run_paused` 与 `waiting_for_measurement` 状态。生产 run 在 `resume_render` 成功后主动结束当前模型段、释放 session 锁，避免模型越过真实测量继续调用 `resume_finalize`；测量通过后，`resume_finalize` 将 `accepted` 视为本轮成功终点，即使底层 v3 stream 没有自行关闭，也会由服务端发出唯一的成功终态；
 - 测量回调只处理暂停后的当前 render，低密度或溢出时再启动新的 continuation run，不再把“等待测量”记录成 `AGENT_RUN_FAILED`；
 - Windows 持久化保留原子写入，但对目标文件短暂被浏览器/服务进程占用时的 `EACCES/EBUSY/EPERM` 做有上限的退避重试；超过上限仍然抛出真实错误，不吞异常；
-- 为上述时间线投影和等待态补充自动化测试，当前 backend 测试为 68/68。
+- 为上述时间线投影和等待态补充自动化测试，当前 backend 测试为 69/69。
 
 ## 4. 统一实现契约
 
@@ -236,3 +236,248 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 - 本轮新增根因修复：即使 SSE 即时送达，旧实现仍会把整组工具统一插入最终回答之前；现在由纯投影按真实事件时间穿插。旧实现还在 `resume_render` 后继续调用 finalize，和浏览器测量竞争同一 session lock；现在生产 run 在 render 后进入 `waiting_for_measurement`，测量完成后再由 continuation 决定是否继续。
 - 本轮收口：`resume_finalize` 成功且任务状态为 `accepted` 时立即写入成功终态，避免底层流没有自然关闭造成“工具已完成但会话永远等待”；session 原子写入对 Windows 短暂锁竞争做有限重试，真实持久化错误仍会暴露。
 - 本轮再次收口：同一运行组可能同时包含“暂停阶段”和“恢复阶段”，前端不能用 `some(paused)` 推断最终状态；现在以最后一个 `agent_run_finished` 终态事件为准，`success` 覆盖早先的 `paused/blocked`，避免服务端已 `idle/accepted` 而 UI 仍显示“等待测量”。
+
+## 10. 本轮 UI 规范化收口
+
+针对刷新后误报、重复状态入口和工具名称暴露内部实现的问题，本轮继续收口：
+
+- `liveState.runState` 作为当前运行态单一来源，统一覆盖 `running / waiting_for_measurement / idle / failed`；SSE、session 恢复、测量回调和请求失败都先更新该状态，再驱动页面状态。
+- 恢复已完成的历史 session 时，不再把旧的测量失败当成当前问题弹出；只有当前 run 处于运行或等待测量状态时，测量失败才会进入用户可见提示。
+- 取消“已发送，Agent 正在处理当前会话”这类与时间线重复的 toast，过程信息只保留在 Agent 时间线，避免状态入口互相竞争。
+- 工具名称继续通过统一映射展示，`workspace_material_read / read_file / write_file` 不再把内部工具名直接暴露给用户。
+- 保留历史 run 的真实事件和失败记录，避免为了视觉干净而篡改诊断证据；当前 run 的成功/失败状态以本轮终态为准。
+
+### 10.1 本轮复测记录
+
+- `frontend/react`：`npm.cmd run typecheck` 通过；`npm.cmd run build` 通过。
+- 真实浏览器路由：`http://127.0.0.1:3191/react/`。操作顺序为刷新已完成 session → 打开 Agent → 发送只读请求 → 分别观察运行中与完成后状态。
+- 刷新后的预期：没有历史 `预览测量失败` toast；已有消息和工具事件仍可回放。
+- 运行中的预期：出现 `Agent 工作流 · 进行中`，工具行按事件顺序出现，默认折叠；没有额外“已发送” toast。
+- 完成后的预期：本轮显示 `Agent 工作流 · 9 项工具 · 完成`，工具记录保留，未出现伪造的“下一步”或空的“正在输出”消息。
+- 浏览器控制台：本轮未发现新增 `error` / `warn`。
+
+当前结论：Agent 聊天 UI 的事件时间线、运行态、工具折叠、恢复回放和错误边界已形成统一契约；历史失败仍保留在历史 run 中，这是可追踪性，不应被隐藏。后续若要进一步减少历史噪音，应独立设计 run 筛选/归档，而不是从事件流中删除失败证据。
+
+## 11. 草稿、预览与 Agent 工具互动数据流改造方案
+
+更新：2026-09-19
+状态：已完成只读盘点，待按任务清单执行
+范围：Markdown 草稿、A4 预览、真实测量、Agent 工具事件、SSE、session 持久化和 React/runtime 状态边界
+
+### 11.1 复盘结论
+
+当前链路不是没有数据，而是存在三套状态源：
+
+```text
+后端 session / taskRef / 文件产物
+        ↕
+frontend runtime liveState
+        ↕
+React MarkdownPane / A4Pane 本地 state
+```
+
+三套状态在正常路径上可以同步，但没有统一的版本身份和事件游标。一旦发生 Agent 暂停、SSE 重连、手动编辑与 Agent 并行、预览 render 切换或 React 组件未重新挂载，就可能出现“预览已更新、编辑器还是旧内容”“工具完成但回答消失”“测量对应的不是当前预览”等问题。
+
+目标不是重做当前三栏布局，而是建立一条明确的数据契约：
+
+```text
+resume.md（源文件，只读基线）
+   ↓
+isolated draft（当前编辑事实来源）
+   ↓ contentVersion
+immutable render（当前预览事实来源）
+   ↓ renderId
+browser measurement（当前验收事实来源）
+   ↓
+task state / session snapshot
+   ↕
+Agent event stream（工具与回答的可回放时间线）
+```
+
+### 11.2 当前三条数据流
+
+#### A. 草稿流
+
+1. `bootstrap` 读取工作区 `resume.md`，新工作区可先初始化空白源文件。
+2. 当前内容写入 `.cvagent/drafts/<taskId>/resume.md`，并生成 `contentVersion`。
+3. `resume_write`、手动 Markdown 应用和 Agent 生成内容都可能写入隔离草稿。
+4. 写入后 task 从 `drafting` 开始重新计算渲染依赖，旧 `renderId` 和旧测量失效。
+5. 正式保存只读取已验收的隔离草稿，不覆盖源 `resume.md`。
+
+相关实现：`frontend/react/src/features/markdown/MarkdownPane.tsx`、`frontend/react/src/runtime/workbench-runtime.js`、`backend/src/core/workspace.js`、`backend/src/core/workflow.js`、`backend/src/agent/resume-tools.js`。
+
+#### B. 预览与测量流
+
+1. `resume_render` 使用当前 `contentVersion + templateRevision + presentation` 生成新的 `renderId`。
+2. HTML 写入 `.cvagent/renders/<taskId>/<renderId>/preview.html`。
+3. 前端 iframe 加载预览，读取逐页 DOM，计算 `pageCount / occupancy / overflow`。
+4. 浏览器将测量结果 POST 到 `/api/agent/measure`。
+5. 后端校验测量的 `renderId` 是否仍是当前 render，然后执行 `resume_metrics → resume_finalize`。
+6. 验收通过进入 `accepted`；未通过进入 `needs_revision`，生产模式可以继续下一轮 Agent 调整。
+
+相关实现：`frontend/react/src/runtime/workbench-runtime.js`、`frontend/react/src/features/preview/A4Pane.tsx`、`backend/src/core/render.js`、`backend/src/server.js`、`backend/src/core/workflow.js`。
+
+#### C. Agent 工具与回答流
+
+1. 用户消息先在前端乐观显示，再由 `/api/agent/run?stream=1` 返回 `202`。
+2. 后端 `runAgentTurn()` 启动 DeepAgent，工具通过 `runResumeTool()` 执行。
+3. 工具生命周期发出 `tool_call_started / tool_call_succeeded / tool_call_failed`。
+4. Agent 文字通过 `assistant_message_started / assistant_delta / assistant_message_finished` 实时进入 SSE。
+5. 非增量事件写入 session 的 `workflowEvents`，最终消息写入 `messages.ndjson`。
+6. 前端通过 `/api/agent/events` 接收事件，归约为 Agent 文本和工具时间线。
+7. 生产模式在 `resume_render` 后暂停，浏览器测量通过后再启动 continuation。
+
+相关实现：`backend/src/server.js`、`backend/src/core/tool-runner.js`、`backend/src/agent/streaming.js`、`frontend/react/src/runtime/agent-chat-state.js`、`frontend/react/src/runtime/agent-chat.js`。
+
+### 11.3 问题清单与优先级
+
+| 优先级 | 问题 | 影响 | 根因 |
+| --- | --- | --- | --- |
+| P0 | React 编辑器与 runtime 草稿状态分离 | Agent 已写新草稿时，Markdown 仍显示旧内容；再次应用可能覆盖 Agent 结果 | `MarkdownPane` 只在挂载时初始化 `useState(content)`，没有按 `contentVersion` 同步 |
+| P0 | Agent 在 render 后暂停时没有持久化当前回答 | 等待 A4 测量或恢复 session 后，已显示的回答可能消失 | `runAgentTurn()` 的暂停分支没有把 `streamed.result.messages` 或部分回答写入 session |
+| P0 | SSE 断线期间的 assistant delta 无法回放 | 工具事件能恢复，回答文字中间出现缺口 | `assistant_delta` 只实时发送，不进入持久化事件或可恢复的运行快照 |
+| P1 | 预览接口没有显式校验 `renderId` | iframe 可能展示新旧 render 混合内容，测量和画面身份不一致 | `/api/agent/preview` 只接收 `sessionId`，直接读取 session 当前 render |
+| P1 | SSE 订阅与历史回放之间有竞态窗口 | Agent 在加载 session 后、订阅前启动时，事件可能漏掉 | 当前顺序是先读取快照，再 `subscribe()`，没有事件游标 |
+| P1 | 事件去重键不稳定 | 同毫秒、同内容的连续 delta 可能被错误去重 | 前端用 timestamp 和 delta 拼键，没有 `eventId / sequence` |
+| P1 | 预览页翻页、缩放控件没有接数据流 | UI 看起来可用，实际按钮无行为 | `renderPreview()` 只生成控件，没有页码和缩放状态管理 |
+| P1 | 手动编辑与 Agent 运行没有语义互斥 | 请求虽被锁串行执行，但用户不知道谁会覆盖谁 | 后端只有 session 锁，没有前端 mutation 状态和版本冲突提示 |
+| P2 | 事件最多保留 240 条且无分页 | 长会话可能丢失运行起点，历史工具组无法回放 | `workflowEvents` 和前端事件数组都使用固定截断 |
+| P2 | 日志存在重复工具成功记录 | 调试日志统计可能把一次工具调用算成两次 | `runResumeTool` 的成功事件与 `sessionToolPersistence` 都写入 session 事件日志 |
+| P2 | 服务端仍生成非模型的 reasoningSummary | 后续若直接渲染，容易再次出现“下一步/思路摘要”伪输出 | `workflowProgress()` 将工具事件拼成解释性文本 |
+
+### 11.4 目标统一契约
+
+#### 版本身份
+
+所有草稿、预览和测量必须携带同一个可追踪身份：
+
+```ts
+type ArtifactIdentity = {
+  sessionId: string
+  runId: string
+  taskId: string
+  contentVersion: string
+  templateRevision: string
+  renderId: string
+}
+```
+
+规则：
+
+1. 草稿变化必须生成新的 `contentVersion`。
+2. 模板或版式变化必须生成新的 `templateRevision` 或 presentation revision。
+3. 每次渲染必须生成新的 `renderId`。
+4. 测量只能提交当前 `renderId`，预览也必须请求当前 `renderId`。
+5. 任意旧版本回调只能被记录，不能修改当前 task 状态。
+
+#### 事件身份
+
+现有事件需要补充稳定的事件序号：
+
+```ts
+type AgentEventEnvelope = ArtifactIdentity & {
+  eventId: string
+  sequence: number
+  timestamp: string
+  event: string
+  toolCallId?: string
+  messageId?: string
+}
+```
+
+`eventId` 用于幂等去重，`sequence` 用于断线续传和排序，不能继续用文本内容与毫秒时间戳推断唯一性。
+
+#### 状态所有权
+
+- 后端 session/task：持久化事实来源，负责 task state、当前 render、当前 measurement、运行终态。
+- Agent event stream：运行过程事实来源，负责工具和回答的时间顺序。
+- 前端 runtime：只做事件归约和页面协调，不另造一套业务状态。
+- React Markdown/A4：改为受控视图，内容和版式通过 `contentVersion / presentationRevision / renderId` 同步；不在组件内部长期持有脱离 session 的副本。
+
+#### 流式回答与恢复
+
+- `assistant_delta` 继续实时传输，不把私有 reasoning 原文发送给用户。
+- 用户消息在 run 开始前持久化，避免失败后用户消息消失。
+- assistant 内容在结束、暂停、失败时至少写入一次可恢复快照。
+- SSE 重连按 `lastSequence` 回放缺失事件；如果 delta 已被压缩，则回放当前 assistant 快照。
+- 工具事件保持结构化，不把工具内部 prompt、简历正文或私有 reasoning 写入日志。
+
+### 11.5 修改任务清单
+
+- [ ] 1. 建立统一 `ArtifactIdentity` 和 `AgentEventEnvelope`，后端生成 `eventId / sequence`。
+  - 覆盖 `publishWorkflowEvent()`、session store、SSE broker。
+  - **验收：** 同一事件重放幂等；同毫秒相同 delta 不丢失。
+  - _对应问题：P1 事件竞态、P1 事件去重_
+
+- [ ] 2. 补齐 Agent 消息持久化边界。
+  - run 开始保存用户消息；暂停/失败保存 assistant 当前快照；成功保存最终消息。
+  - **验收：** render 后暂停、工具失败、服务重启后，用户消息和已生成回答仍可恢复。
+  - _对应问题：P0 暂停回答丢失、P0 SSE 断线缺口_
+
+- [ ] 3. 改造 SSE 为“订阅后回放 + 游标续传”。
+  - 连接建立时先注册 subscriber，再回放指定 sequence 之后的事件。
+  - 客户端保留最后已确认 sequence，自动重连不重复、不漏事件。
+  - **验收：** 人为断开 SSE 后重新连接，工具和回答均能补齐。
+  - _对应问题：P0 delta 不可恢复、P1 订阅竞态_
+
+- [ ] 4. 收拢 React 与 runtime 的状态同步。
+  - MarkdownPane 接收 `contentVersion` 并按版本更新内容。
+  - A4Pane 接收 `presentationRevision / renderId` 并同步布局和图标参数。
+  - 禁止 Agent 生成新草稿后，编辑器继续保留旧 value。
+  - **验收：** Agent 写入草稿后，Markdown、预览和 session API 三者内容版本一致。
+  - _对应问题：P0 双状态源_
+
+- [ ] 5. 让预览接口使用精确 render 身份。
+  - `/api/agent/preview` 接收 `sessionId + renderId`，服务端校验并读取对应不可变产物。
+  - iframe URL、测量请求、SSE `render_succeeded` 使用同一 `renderId`。
+  - **验收：** 连续快速渲染两个版本，旧 iframe 的测量和内容不能覆盖新版本。
+  - _对应问题：P1 预览 render 错位_
+
+- [ ] 6. 为手动编辑、版式调整和 Agent 运行增加 mutation 状态。
+  - 明确 `idle / agent_running / manual_mutation / waiting_measurement / failed`。
+  - 冲突操作要么禁用，要么明确排队并显示目标版本。
+  - **验收：** Agent 运行中点击手动应用，不会静默覆盖，并能看到排队或拒绝原因。
+  - _对应问题：P1 语义冲突_
+
+- [ ] 7. 完成预览页真实交互。
+  - 页码、翻页、缩放和重新渲染绑定当前 render，不使用无状态按钮。
+  - **验收：** 两页简历可以独立翻页；缩放只改变视图，不改变 render 和测量身份。
+  - _对应问题：P1 死控件_
+
+- [ ] 8. 清理日志和回放边界。
+  - 区分实时事件、审计事件、消息快照，不重复计数工具成功。
+  - 将固定 240 条改成按 cursor 分页或按 run 分段读取。
+  - **验收：** 长会话可以完整读取指定 run；日志中的工具数量和 UI 数量一致。
+  - _对应问题：P2 截断、P2 重复日志_
+
+### 11.6 验收矩阵
+
+| 场景 | 预期结果 |
+| --- | --- |
+| 手动修改 Markdown 并应用 | 草稿产生新 `contentVersion`，预览产生新 `renderId`，测量只接受新版本 |
+| Agent 写入隔离草稿 | Markdown 编辑区、预览、session API 显示同一内容版本 |
+| Agent render 后暂停 | 已输出回答和用户消息保留，状态显示等待测量，不显示失败 |
+| SSE 中途断开 | 重连后按 sequence 补回工具和回答，不重复、不漏事件 |
+| 连续快速渲染 | 旧 iframe 回调被拒绝，新 render 独占当前 task 状态 |
+| Agent 执行时手动编辑 | 显示冲突/排队状态，不发生静默覆盖 |
+| 两页完整预览 | 翻页和缩放有效，预览页面与测量 renderId 一致 |
+| 服务重启后打开会话 | 草稿、当前 render、测量、工具事件和已生成回答可恢复 |
+| 工具失败后重试成功 | 历史失败保留，最终 run 状态以最后终态为准，不伪造成功工具 |
+
+### 11.7 非目标与边界
+
+- 不重写当前三栏工作台，不因为数据流治理改动既有布局结构。
+- 不把私有链式推理原文作为用户聊天内容或日志内容；用户可见的是助手回答增量、工具状态和必要结果摘要。
+- 不删除历史失败事件；通过 run 分组、筛选和归档降低噪音。
+- 不继续用前端 toast、伪造“下一步”或静态工具列表掩盖真实事件缺失。
+- 不在本轮文档阶段修改代码；代码执行必须按任务清单逐项完成并补自动化与真实浏览器验收。
+
+### 11.8 执行门槛
+
+本方案确认后再开始代码修改。每完成一项任务，必须同时补：
+
+1. 对应的状态/事件测试；
+2. 真实 API 或 SSE 集成测试；
+3. 真实浏览器截图验收；
+4. 日志中可用 `sessionId + runId + eventId + sequence` 反查；
+5. 文档中的任务状态和验收记录。

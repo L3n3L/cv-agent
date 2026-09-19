@@ -1,0 +1,27 @@
+# Implementation Plan
+
+- [x] 1. 固化需求、设计与验收标准
+  - 写入本目录的 requirements、design 和本任务清单。
+  - _Requirement: R1-R6_
+- [x] 2. 修复后端草稿恢复状态机
+  - 增加显式 `resume_reopen_draft` 状态转换。
+  - 让 `resume_prepare` 识别当前隔离草稿并返回恢复动作。
+  - 让 `DRAFT_REQUIRED` 带当前状态和恢复上下文。
+  - _Requirement: R1, R2, R5_
+- [x] 3. 修复前端 render/measure 生命周期
+  - session 无当前 render 时清理本地 renderId。
+  - 只有 rendered + waiting_for_measurement 才测量。
+  - 使用 iframe 官方 metrics，移除固定容器高度推断。
+  - 以预览 iframe 的 `postMessage` 指标为主入口，load 读取只作兼容回退。
+  - _Requirement: R3, R4_
+- [x] 4. 增加回归测试
+  - 覆盖 blocked -> reopen -> render。
+  - 覆盖陈旧测量和无效状态测量。
+  - 覆盖官方 occupancy 指标。
+  - _Requirement: R1-R6_
+- [x] 5. 对照文档验收
+  - 后端测试、前端 typecheck/build。
+  - 浏览器真实走通恢复和测量链路。
+  - 浏览器验证旧 render 被拒绝，当前 render 的真实指标被保留。
+  - 记录未覆盖的外部依赖或环境缺口。
+  - _Requirement: R6_

@@ -24,7 +24,7 @@ function safeMessage(message) {
   if (message === null || typeof message !== 'object') return { role: 'user', content: String(message ?? '') }
   const role = message.role || (message.type === 'human' ? 'user' : message.type === 'ai' ? 'assistant' : message.type === 'tool' ? 'tool' : message.type)
   const result = { role: String(role || 'assistant'), content: message.content ?? '' }
-  for (const key of ['id', 'messageId', 'turnId', 'runId', 'timestamp', 'sequence', 'name', 'tool_call_id', 'tool_calls', 'additional_kwargs', 'response_metadata']) {
+  for (const key of ['id', 'messageId', 'turnId', 'runId', 'timestamp', 'sequence', 'status', 'name', 'tool_call_id', 'tool_calls', 'additional_kwargs', 'response_metadata']) {
     if (message[key] !== undefined) result[key] = message[key]
   }
   return result
@@ -36,7 +36,7 @@ function safeMessages(messages) {
 
 function safeWorkflowEvent(event) {
   if (!event || typeof event !== 'object') return null
-  const allowed = ['event', 'timestamp', 'sequence', 'sessionId', 'turnId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'executionMode', 'continuationRound', 'continuationBudget', 'outcome', 'durationMs', 'assistantChars', 'errorCode', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reason', 'reasoningSummary', 'delta', 'messageId']
+  const allowed = ['event', 'timestamp', 'sequence', 'sessionId', 'turnId', 'runId', 'taskId', 'workspaceId', 'resumeId', 'toolName', 'toolCallId', 'mode', 'executionMode', 'continuationRound', 'continuationBudget', 'outcome', 'durationMs', 'assistantChars', 'errorCode', 'failureClass', 'recoveryTool', 'currentState', 'draftAvailable', 'contentVersion', 'templateRevision', 'renderId', 'state', 'phase', 'reason', 'reasoningSummary', 'delta', 'messageId']
   const value = {}
   for (const key of allowed) {
     if (event[key] !== undefined && event[key] !== null) value[key] = event[key]
@@ -65,6 +65,7 @@ function sessionSnapshot(session) {
     executionMode: session.executionMode || 'chat',
     activeTurnId: session.activeTurnId || null,
     workflowSequence: Math.max(0, Number(session.workflowSequence) || 0),
+    messageSequence: Math.max(0, Number(session.messageSequence) || 0),
     automation: {
       continuationCount: Math.max(0, Number(session.automation?.continuationCount) || 0),
       continuationBudget: Math.max(0, Number(session.automation?.continuationBudget) || 0),
@@ -99,6 +100,7 @@ function hydrateSession(snapshot) {
     messages: safeMessages(snapshot.messages),
     workflowEvents: safeWorkflowEvents(snapshot.workflowEvents),
     workflowSequence: Math.max(0, Number(snapshot.workflowSequence) || 0),
+    messageSequence: Math.max(0, Number(snapshot.messageSequence) || 0),
     activeTurnId: snapshot.activeTurnId || null,
     executionMode: snapshot.executionMode || 'chat',
     automation: {

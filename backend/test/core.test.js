@@ -6,7 +6,7 @@ import test from 'node:test'
 import { createLogger } from '../src/core/logger.js'
 import { createResumeTools } from '../src/agent/resume-tools.js'
 import { suggestPresentationAdjustment } from '../src/agent/presentation-suggestion.js'
-import { confirmResumeTask, createResumeTask, prepareResumeTask, recordDraftWrite, recordMeasurement, recordRender, recordTemplateChange, saveResumeTask, TASK_STATES, verifyResumeTask } from '../src/core/workflow.js'
+import { confirmResumeTask, createResumeTask, prepareResumeTask, recordDraftWrite, recordMeasurement, recordRender, recordTemplateChange, reopenResumeDraft, saveResumeTask, TASK_STATES, verifyResumeTask } from '../src/core/workflow.js'
 import { runResumeTool } from '../src/core/tool-runner.js'
 import { createServer } from '../src/server.js'
 import { ensureWorkspace, listWorkspacePreviews } from '../src/core/workspace.js'
@@ -125,7 +125,7 @@ test('session store replays only durable workflow events after a sequence cursor
 test('agent exposes one canonical MCP-aligned resume workflow surface', () => {
   const tools = createResumeTools({ workspaceRoot: 'E:/resume-workspace', resumePath: 'resume.md', taskRef: { current: task() }, includeMeasurementTool: true })
   const names = tools.map((item) => item.name)
-  for (const name of ['resume_prepare', 'resume_production_guide', 'resume_read', 'resume_check', 'icon_list', 'layout_validate', 'template_family_list', 'template_autotune', 'resume_write', 'resume_render', 'resume_metrics', 'resume_finalize', 'presentation_suggest', 'resume_save_version']) assert.ok(names.includes(name), `${name} is missing`)
+  for (const name of ['resume_prepare', 'resume_production_guide', 'resume_read', 'resume_check', 'icon_list', 'layout_validate', 'template_family_list', 'template_autotune', 'resume_write', 'resume_reopen_draft', 'resume_render', 'resume_metrics', 'resume_finalize', 'presentation_suggest', 'resume_save_version']) assert.ok(names.includes(name), `${name} is missing`)
   for (const name of ['resume_inspect', 'resume_quality_check', 'resume_draft_write', 'resume_measure', 'resume_verify']) assert.ok(!names.includes(name), `${name} is a stale duplicate`)
   assert.equal(new Set(names).size, names.length)
 })
@@ -179,6 +179,38 @@ test('template selection returns a blocked draft to drafting so it can be render
   assert.equal(next.context.contentVersion, 'content-v1')
   assert.equal(next.context.templateId, 'browser-link-verify')
   assert.equal(next.context.renderId, null)
+})
+
+test('blocked tasks with a current draft reopen explicitly and invalidate stale render identity', () => {
+  let current = recordDraftWrite(prepareResumeTask(task()), { contentVersion: 'content-v1' })
+  current = { ...current, state: TASK_STATES.BLOCKED, blockers: ['没有当前内容和模板匹配的测量结果'], context: { ...current.context, renderId: 'render-old' }, artifacts: { ...current.artifacts, renderId: 'render-old' } }
+
+  const reopened = reopenResumeDraft(current)
+
+  assert.equal(reopened.state, TASK_STATES.DRAFTING)
+  assert.equal(reopened.context.contentVersion, 'content-v1')
+  assert.equal(reopened.context.renderId, null)
+  assert.equal(reopened.measurements, null)
+  assert.deepEqual(reopened.blockers, [])
+})
+
+test('reopening without a draft returns a structured recovery error', () => {
+  assert.throws(() => reopenResumeDraft(prepareResumeTask(task())), (error) => {
+    assert.equal(error.code, 'DRAFT_REQUIRED')
+    assert.equal(error.failureClass, 'requires_transition')
+    assert.equal(error.details.recoveryTool, 'resume_write')
+    return true
+  })
+})
+
+test('recoverable tool failures return structured results without rejecting the Agent tool call', async () => {
+  const taskRef = { current: prepareResumeTask(task()) }
+  const tools = createResumeTools({ workspaceRoot: 'E:/resume-workspace', resumePath: 'resume.md', taskRef })
+  const result = await tools.find((tool) => tool.name === 'presentation_suggest').invoke({})
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'MEASUREMENT_REQUIRED')
+  assert.equal(result.failureClass, 'requires_transition')
+  assert.equal(result.recoveryTool, 'browser_measurement')
 })
 
 test('workspace preview listing is deterministic and excludes isolated CVAgent artifacts', async () => {
@@ -345,6 +377,14 @@ test('workspace drafts are isolated from the source resume and tools advance tas
     assert.equal(taskRef.current.state, TASK_STATES.DRAFTING)
     const currentInspection = await tools.find((tool) => tool.name === 'resume_read').invoke({ includeContent: true })
     assert.equal(currentInspection.content, '# Draft Resume\n\nImproved content\n')
+    taskRef.current = { ...taskRef.current, state: TASK_STATES.BLOCKED, blockers: ['没有当前内容和模板匹配的测量结果'], context: { ...taskRef.current.context, renderId: 'render-old' } }
+    const preparedDraft = await tools.find((tool) => tool.name === 'resume_prepare').invoke({})
+    assert.equal(preparedDraft.sourceType, 'isolated_draft')
+    assert.equal(preparedDraft.draftAvailable, true)
+    assert.equal(preparedDraft.nextTool, 'resume_reopen_draft')
+    const reopened = await tools.find((tool) => tool.name === 'resume_reopen_draft').invoke({})
+    assert.equal(reopened.state, TASK_STATES.DRAFTING)
+    assert.equal(taskRef.current.context.renderId, null)
     const rendered = await tools.find((tool) => tool.name === 'resume_render').invoke({})
     assert.equal(taskRef.current.state, TASK_STATES.RENDERED)
     assert.ok(rendered.relativePath.endsWith('/preview.html'))
@@ -718,6 +758,12 @@ test('measurement callback verifies the exact rendered artifact', async () => {
     assert.equal(firstMeasureResponse.status, 200)
     assert.equal(firstMeasured.verification.passed, false)
     assert.equal(firstMeasured.state, TASK_STATES.NEEDS_REVISION)
+    const duplicateBlockedMeasurementResponse = await fetch(`http://127.0.0.1:${address.port}/api/agent/measure`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, renderId: run.context.renderId, pageCount: 2, occupancy: [0.5, 0.2], overflow: false }) })
+    const duplicateBlockedMeasurement = await duplicateBlockedMeasurementResponse.json()
+    assert.equal(duplicateBlockedMeasurementResponse.status, 200)
+    assert.equal(duplicateBlockedMeasurement.replayed, true)
+    assert.equal(duplicateBlockedMeasurement.state, TASK_STATES.NEEDS_REVISION)
+    assert.equal(duplicateBlockedMeasurement.verification.passed, false)
     const continuationResponse = await fetch(`http://127.0.0.1:${address.port}/api/agent/continue`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, renderId: run.context.renderId }) })
     const continued = await continuationResponse.json()
     assert.equal(continuationResponse.status, 200)
@@ -735,6 +781,12 @@ test('measurement callback verifies the exact rendered artifact', async () => {
     assert.equal(measureResponse.status, 200)
     assert.equal(measured.verification.passed, true)
     assert.equal(measured.state, TASK_STATES.ACCEPTED)
+    const duplicateMeasurementResponse = await fetch(`http://127.0.0.1:${address.port}/api/agent/measure`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, renderId: continued.context.renderId, pageCount: 1, occupancy: [0.95], overflow: false }) })
+    const duplicateMeasurement = await duplicateMeasurementResponse.json()
+    assert.equal(duplicateMeasurementResponse.status, 200)
+    assert.equal(duplicateMeasurement.replayed, true)
+    assert.equal(duplicateMeasurement.state, TASK_STATES.ACCEPTED)
+    assert.equal(duplicateMeasurement.verification.passed, true)
     const saveWithoutConfirmation = await fetch(`http://127.0.0.1:${address.port}/api/agent/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, name: 'Accepted Resume' }) })
     assert.equal(saveWithoutConfirmation.status, 400)
     const saveResponse = await fetch(`http://127.0.0.1:${address.port}/api/agent/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, name: 'Accepted Resume', confirm: true }) })

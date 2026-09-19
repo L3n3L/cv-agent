@@ -9,11 +9,12 @@ export const DEFAULT_AUTO_CONTINUATION_BUDGET = 4
 const EXPLICIT_READ_ONLY = /(只读|仅查看|不要修改|不修改|不要改|不改内容|只检查)/
 const INSPECTION_REQUEST = /(查看|看下|看看|读取|读一下|检查当前|当前简历.*内容|简历.*内容)/
 const PRODUCTION_REQUEST = /(制作|生成|改写|修改|优化|整理|压缩|排版|渲染|一页|定向|投递|补充|增加|删除|替换|重写|继续调整|应用模板|不要保存正式版|先不要保存)/
+const PRODUCTION_ACTION = /(制作|生成|改写|优化|整理|压缩|排版|渲染|一页|定向|投递|补充|增加|删除|替换|重写|继续调整|应用模板|不要保存正式版|先不要保存)/
 
 export function classifyAgentExecutionMode(message) {
   const value = String(message || '').trim()
   if (!value) return AGENT_EXECUTION_MODES.CHAT
-  if (EXPLICIT_READ_ONLY.test(value)) return AGENT_EXECUTION_MODES.READ_ONLY
+  if (EXPLICIT_READ_ONLY.test(value) && !PRODUCTION_ACTION.test(value)) return AGENT_EXECUTION_MODES.READ_ONLY
   if (PRODUCTION_REQUEST.test(value)) return AGENT_EXECUTION_MODES.PRODUCTION
   if (INSPECTION_REQUEST.test(value)) return AGENT_EXECUTION_MODES.READ_ONLY
   return AGENT_EXECUTION_MODES.CHAT

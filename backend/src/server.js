@@ -17,7 +17,7 @@ import { createResumeToolHandlers, createResumeTools } from './agent/resume-tool
 import { measureSchema, presentationSchema, qualitySchema, templateCopySchema, templateSelectSchema, writeSchema } from './agent/schemas.js'
 import { archiveResumeVersion, createResumeSource, ensureWorkspace, listResumeVersions, listWorkspacePreviews, readResumeDraft, readResumeVersion, readWorkspaceAsset, readWorkspaceText, renameResumeVersion, saveResumeVersion, writeResumeDraft } from './core/workspace.js'
 import { createWorkspaceRegistry } from './core/workspace-registry.js'
-import { confirmResumeTask, recordDraftWrite, saveResumeTask } from './core/workflow.js'
+import { confirmResumeTask, isMeasurementReplay, recordDraftWrite, saveResumeTask } from './core/workflow.js'
 import { copyWorkspaceTemplate, getWorkspaceTemplateSnapshotIdentity, listWorkspaceTemplateVersions, listWorkspaceTemplates, loadWorkspaceTemplate, restoreWorkspaceTemplateVersion, saveWorkspaceTemplate } from './migrated/resume-engine/catalog.js'
 import { renderResumeDraft } from './core/render.js'
 import { generateTemplateCandidate } from './migrated/resume-engine/template-generation.js'
@@ -62,25 +62,51 @@ function chatMessageContent(message) {
   return ''
 }
 
-function sameChatMessage(left, right) {
-  return chatMessageRole(left) === chatMessageRole(right) && chatMessageContent(left) === chatMessageContent(right)
+function messageSequenceValue(value) {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
-function containsMessageSequence(messages, expected) {
-  const list = Array.isArray(messages) ? messages : []
-  const sequence = Array.isArray(expected) ? expected : []
-  if (!sequence.length) return true
-  for (let start = 0; start <= list.length - sequence.length; start += 1) {
-    if (sequence.every((message, index) => sameChatMessage(list[start + index], message))) return true
-  }
-  return false
+function nextMessageSequence(session) {
+  session.messageSequence = Math.max(0, Number(session.messageSequence) || 0) + 1
+  return session.messageSequence
 }
 
-function captureAgentMessages(session, result, { persistUserMessage, transientMessage, inputMessages, turnId, runId } = {}) {
-  if (!Array.isArray(result?.messages)) return
+function messageIdentity(message, index = 0) {
+  const messageId = String(message?.messageId || message?.id || '').trim()
+  if (messageId) return `id:${messageId}`
+  const role = chatMessageRole(message)
+  const turnId = String(message?.turnId || '').trim()
+  const content = chatMessageContent(message)
+  if (turnId) return `turn:${turnId}:${role}:${content}`
+  const sequence = messageSequenceValue(message?.sequence)
+  if (sequence !== null) return `sequence:${sequence}:${role}`
+  return `legacy:${role}:${String(message?.timestamp || '')}:${content}:${index}`
+}
+
+function mergeMessageSnapshots(baseMessages, outputMessages) {
+  const merged = (Array.isArray(baseMessages) ? baseMessages : []).map((message) => ({ ...message }))
+  const indexes = new Map()
+  merged.forEach((message, index) => indexes.set(messageIdentity(message, index), index))
+  ;(Array.isArray(outputMessages) ? outputMessages : []).forEach((message, index) => {
+    const identity = messageIdentity(message, index)
+    const existingIndex = indexes.get(identity)
+    if (existingIndex === undefined) {
+      indexes.set(identity, merged.length)
+      merged.push(message)
+      return
+    }
+    const existing = merged[existingIndex]
+    if (chatMessageRole(message) === 'assistant' && chatMessageContent(message).length > chatMessageContent(existing).length) merged[existingIndex] = { ...existing, ...message }
+  })
+  return merged
+}
+
+function captureAgentMessages(session, result, { persistUserMessage, transientMessage, inputMessages, turnId, runId, partialAssistantMessages = new Map() } = {}) {
   const currentUser = Array.isArray(inputMessages) ? inputMessages[inputMessages.length - 1] : null
   const durableMessages = persistUserMessage ? inputMessages : (Array.isArray(inputMessages) ? inputMessages.slice(0, -1) : [])
-  const rawMessages = result.messages
+  const rawMessages = Array.isArray(result?.messages) ? result.messages : []
   let transientIndex = -1
   rawMessages.forEach((message, index) => {
     if (chatMessageRole(message) === 'user' && chatMessageContent(message) === String(transientMessage || '')) transientIndex = index
@@ -89,6 +115,7 @@ function captureAgentMessages(session, result, { persistUserMessage, transientMe
     ? transientIndex + 1
     : rawMessages.length < durableMessages.length ? 0 : durableMessages.length
   let assistantIndex = 0
+  let messageSequence = Math.max(0, Number(session.messageSequence) || 0)
   const outputMessages = rawMessages.map((message, index) => {
     const role = chatMessageRole(message)
     if (role === 'user' && index === transientIndex && currentUser) return { ...message, ...currentUser, role: 'user', content: currentUser.content }
@@ -101,9 +128,17 @@ function captureAgentMessages(session, result, { persistUserMessage, transientMe
       runId: String(runId || message.runId || ''),
       messageId: String(message.messageId || message.id || `assistant-${runId || 'run'}-${assistantIndex}`),
       timestamp: message.timestamp || new Date().toISOString(),
+      sequence: messageSequenceValue(message.sequence) ?? ++messageSequence,
     }
   })
-  const merged = containsMessageSequence(outputMessages, durableMessages) ? outputMessages : [...durableMessages, ...outputMessages]
+  const outputAssistantIds = new Set(outputMessages.filter((message) => chatMessageRole(message) === 'assistant').map((message) => String(message.messageId || message.id || '')))
+  for (const [messageId, content] of partialAssistantMessages.entries()) {
+    const text = String(content || '')
+    if (!text.trim() || outputAssistantIds.has(String(messageId))) continue
+    outputMessages.push({ role: 'assistant', content: text, turnId: String(turnId || ''), runId: String(runId || ''), messageId: String(messageId), timestamp: new Date().toISOString(), sequence: ++messageSequence, status: 'partial' })
+  }
+  const merged = mergeMessageSnapshots(durableMessages, outputMessages)
+  session.messageSequence = Math.max(messageSequence, ...merged.map((message) => Number(message?.sequence) || 0))
   session.messages = persistUserMessage ? merged : withoutTransientUserMessage(merged, transientMessage, turnId)
 }
 
@@ -250,7 +285,7 @@ async function runAgentTurn(session, message, options = {}) {
   const mode = options.mode || 'user_message'
   const executionMode = options.executionMode || session.executionMode || AGENT_EXECUTION_MODES.CHAT
   const persistUserMessage = options.persistUserMessage === true
-  const inputMessages = [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message, turnId, runId, messageId: `user-${turnId}`, timestamp: new Date().toISOString() }]
+  const inputMessages = [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message, turnId, runId, messageId: `user-${turnId}`, timestamp: new Date().toISOString(), ...(persistUserMessage ? { sequence: nextMessageSequence(session) } : {}) }]
   // User turns are durable before the Agent starts. Internal continuation
   // prompts still enter the Agent input, but must never become conversation
   // history visible to the user.
@@ -287,6 +322,7 @@ async function runAgentTurn(session, message, options = {}) {
   const input = { messages: inputMessages }
   if (executionMode !== AGENT_EXECUTION_MODES.READ_ONLY) input.files = await resumeProductionSkillFiles()
   const assistantStreamChars = new Map()
+  const assistantStreamText = new Map()
   let streamed
   try {
     streamed = await runAgentWithStreaming(agent, input, {
@@ -298,6 +334,7 @@ async function runAgentTurn(session, message, options = {}) {
     },
     onAssistantDelta: async ({ messageId, delta }) => {
       assistantStreamChars.set(messageId, (assistantStreamChars.get(messageId) || 0) + String(delta || '').length)
+      assistantStreamText.set(messageId, `${assistantStreamText.get(messageId) || ''}${String(delta || '')}`)
       await notifyRunEvent({ event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
     },
     onAssistantFinish: async ({ messageId }) => {
@@ -307,12 +344,13 @@ async function runAgentTurn(session, message, options = {}) {
     },
     })
   } catch (error) {
+    captureAgentMessages(session, streamed?.result, { persistUserMessage, transientMessage: message, inputMessages, turnId, runId, partialAssistantMessages: assistantStreamText })
     if (!pauseAfterRender && !completeAfterFinalize) {
       if (error && typeof error === 'object' && !error.runId) error.runId = runId
       throw error
     }
   }
-  captureAgentMessages(session, streamed?.result, { persistUserMessage, transientMessage: message, inputMessages, turnId, runId })
+  captureAgentMessages(session, streamed?.result, { persistUserMessage, transientMessage: message, inputMessages, turnId, runId, partialAssistantMessages: assistantStreamText })
   if (pauseAfterRender) {
     const pausedTask = taskRef.current
     session.runState = 'waiting_for_measurement'
@@ -390,11 +428,14 @@ async function recordAgentRunFailure(session, error, options, mode = 'user_messa
   if (!session) return
   const errorCode = String(error?.code || 'AGENT_RUN_FAILED')
   const errorMessage = String(error?.message || error)
+  const errorDetails = error?.details && typeof error.details === 'object' ? error.details : {}
+  const failureClass = String(error?.failureClass || errorDetails.failureClass || 'fatal')
+  const recoveryTool = error?.recoveryTool || errorDetails.recoveryTool || null
   const runId = String(options?.runId || error?.runId || `run-${crypto.randomUUID()}`)
   const failedTask = { ...session.taskRef.current, runId }
   session.runState = 'failed'
   session.status = session.taskRef.current?.state || 'failed'
-  session.lastError = { code: errorCode, message: errorMessage }
+  session.lastError = { code: errorCode, message: errorMessage, failureClass, recoveryTool, currentState: errorDetails.currentState || session.taskRef.current?.state || null, draftAvailable: errorDetails.draftAvailable === true }
   if (errorCode === 'SOURCE_CHANGED') {
     await emitWorkflowEvent(options.serverLogger, WORKFLOW_EVENTS.SOURCE_CHANGED, { ...failedTask, sessionId: session.sessionId }, { errorCode, resumePath: session.resumePath }).catch(() => {})
   }
@@ -408,7 +449,7 @@ async function recordAgentRunFailure(session, error, options, mode = 'user_messa
     errorCode,
     mode,
   }, options.sessionStore).catch(() => {})
-  await options.serverLogger.error('agent_run_failed', { ...contextFields(session.taskRef.current?.context), runId, errorCode, errorMessage, mode }).catch(() => {})
+  await options.serverLogger.error('agent_run_failed', { ...contextFields(session.taskRef.current?.context), runId, errorCode, errorMessage, failureClass, recoveryTool, mode }).catch(() => {})
 }
 
 function publicSessionSummary(sessionStore, session, includeMessages = false) {
@@ -982,6 +1023,40 @@ async function handleMeasurement(request, response, options) {
     if (!session) throw Object.assign(new Error('session was not found'), { code: 'SESSION_NOT_FOUND' })
     const result = await withSessionLock(session, async () => {
       if (String(input.renderId) !== String(session.taskRef.current.context.renderId || '')) throw Object.assign(new Error('measurement renderId is stale'), { code: 'MEASUREMENT_STALE' })
+      if (isMeasurementReplay(session.taskRef.current, input)) {
+        const task = session.taskRef.current
+        const recorded = task.measurements
+        const passed = task.state === 'accepted' || task.state === 'user_confirmed' || task.state === 'saved'
+        const verification = {
+          passed,
+          state: task.state,
+          blockers: [...task.blockers],
+          nextAction: passed ? '等待用户确认后保存正式版本' : '先调整模板或草稿，再重新渲染和测量',
+          context: contextFields(task.context),
+          task,
+          replayed: true,
+        }
+        const measurement = {
+          ...contextFields(task.context),
+          state: task.state,
+          pageCount: recorded.pageCount,
+          occupancy: [...recorded.occupancy],
+          overflow: recorded.overflow,
+          nextTool: passed ? 'user_confirmation' : 'resume_render',
+          completionAllowed: passed,
+          nextAction: verification.nextAction,
+          replayed: true,
+        }
+        await options.serverLogger.info('measurement_replayed', {
+          ...contextFields(task.context),
+          state: task.state,
+          pageCount: recorded.pageCount,
+          occupancy: recorded.occupancy,
+          overflow: recorded.overflow,
+          reason: 'duplicate_browser_callback',
+        })
+        return { measurement, verification, state: task.state, context: contextFields(task.context), replayed: true }
+      }
       const runLogger = options.serverLogger.child(contextFields(session.taskRef.current.context))
       const handlers = createResumeToolHandlers({ sessionId: session.sessionId, workspaceRoot: session.workspaceRoot, resumePath: session.resumePath, sourceHash: session.sourceHash, taskRef: session.taskRef, logger: runLogger, onToolSuccess: sessionToolPersistence(options.sessionStore, session), onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })
       const measurement = await handlers.resumeMeasure(input)
@@ -989,7 +1064,7 @@ async function handleMeasurement(request, response, options) {
       return { measurement, verification, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) }
     })
     const autoContinuation = scheduleMeasurementContinuation(session, input.renderId, result.verification, options)
-    if (result.verification?.state === 'accepted' || session.taskRef.current.state === 'accepted') {
+    if (!result.replayed && (result.verification?.state === 'accepted' || session.taskRef.current.state === 'accepted')) {
       const acceptedTask = session.taskRef.current
       session.runState = 'idle'
       session.status = acceptedTask.state
@@ -1002,7 +1077,7 @@ async function handleMeasurement(request, response, options) {
     sendJson(response, 200, { ok: true, sessionId, ...result, runState: session.runState, autoContinuation })
   } catch (error) {
     const details = { errorCode: String(error?.code || 'MEASUREMENT_FAILED'), errorMessage: String(error?.message || error) }
-    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MEASUREMENT_INVALID', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'TOOL_FAILED'])
+    const clientErrorCodes = new Set(['INVALID_JSON', 'REQUEST_TOO_LARGE', 'MEASUREMENT_INVALID', 'SESSION_NOT_FOUND', 'MEASUREMENT_STALE', 'MEASUREMENT_NOT_ALLOWED', 'TOOL_FAILED'])
     sendJson(response, clientErrorCodes.has(error?.code) ? 400 : 500, { ok: false, ...details })
   }
 }

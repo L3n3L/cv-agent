@@ -89,16 +89,190 @@ export function workflowGroupHasAssistantText(group) {
     .some((entry) => entry.kind === 'assistant' && String(entry.text || '').trim())
 }
 
+function messageText(message) {
+  if (typeof message?.content === 'string') return message.content
+  if (Array.isArray(message?.content)) return message.content.filter((part) => part?.type === 'text').map((part) => part.text).join('')
+  return ''
+}
+
+function messageRole(message) {
+  return String(message?.role || (message?.type === 'human' ? 'user' : message?.type === 'ai' ? 'assistant' : '')).trim()
+}
+
+function timestampValue(value) {
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+}
+
+function sequenceValue(value) {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function eventOrder(event, fallback) {
+  const timestamp = timestampValue(event?.timestamp)
+  if (timestamp !== Number.MAX_SAFE_INTEGER) return timestamp
+  return sequenceValue(event?.sequence) ?? fallback
+}
+
+function messageIdentity(message, index = 0) {
+  const messageId = String(message?.messageId || message?.id || '').trim()
+  if (messageId) return `id:${messageId}`
+  const turnId = String(message?.turnId || '').trim()
+  const role = messageRole(message)
+  const content = messageText(message)
+  if (turnId) return `turn:${turnId}:${role}:${content}`
+  const sequence = sequenceValue(message?.sequence)
+  if (sequence !== null) return `sequence:${sequence}:${role}`
+  return `legacy:${role}:${String(message?.timestamp || '')}:${content}:${index}`
+}
+
+function normalizeMessages(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message, index) => {
+      const role = messageRole(message)
+      const content = messageText(message)
+      const sequence = sequenceValue(message?.sequence)
+      return {
+        role,
+        content,
+        timestamp: message?.timestamp || '',
+        turnId: String(message?.turnId || '').trim(),
+        messageId: String(message?.messageId || message?.id || '').trim(),
+        runId: String(message?.runId || '').trim(),
+        status: String(message?.status || '').trim(),
+        sequence,
+        order: timestampValue(message?.timestamp) !== Number.MAX_SAFE_INTEGER ? timestampValue(message.timestamp) : sequence ?? index,
+        sourceIndex: index,
+      }
+    })
+    .filter((message) => ['user', 'assistant'].includes(message.role) && message.content.trim())
+}
+
+function dedupeWorkflowEvents(events) {
+  const byIdentity = new Map()
+  ;(Array.isArray(events) ? events : []).forEach((event, index) => {
+    if (!event || typeof event !== 'object' || !event.event) return
+    const sequence = sequenceValue(event.sequence)
+    const identity = String(event.eventId || event.id || '').trim() || [
+      sequence !== null ? `sequence:${sequence}` : '',
+      event.event,
+      event.turnId || '',
+      event.runId || '',
+      event.toolCallId || event.messageId || '',
+      event.timestamp || '',
+      event.delta || '',
+      index,
+    ].join('|')
+    byIdentity.set(identity, event)
+  })
+  return [...byIdentity.values()].sort((left, right) => eventOrder(left, 0) - eventOrder(right, 0))
+}
+
 /**
- * Keep the optimistic current turn when the server snapshot was persisted
- * before the latest user message. Session messages are append-only at this
- * boundary, so only the local suffix needs to survive a failed run sync.
+ * Build one workflow group per turn. Legacy workflow events without a turnId
+ * are intentionally excluded: the dataflow contract does not permit an
+ * orphaned workflow to be appended to the bottom of a conversation.
+ */
+export function eventGroups(events) {
+  const groupsByTurn = new Map()
+  let agentRunStarted = false
+  dedupeWorkflowEvents(events).forEach((event) => {
+    if (event.event === 'agent_run_started') agentRunStarted = true
+    if (!agentRunStarted) return
+    const turnId = String(event.turnId || '').trim()
+    if (!turnId) return
+    const group = groupsByTurn.get(turnId) || { key: `turn:${turnId}`, turnId, runId: '', events: [], firstEventOrder: Number.MAX_SAFE_INTEGER }
+    group.events.push(event)
+    group.runId = String(event.runId || group.runId || '').trim()
+    group.firstEventOrder = Math.min(group.firstEventOrder, eventOrder(event, group.events.length))
+    groupsByTurn.set(turnId, group)
+  })
+  return [...groupsByTurn.values()]
+    .filter((group) => group.events.some((event) => ['tool_call_started', 'tool_call_succeeded', 'tool_call_failed'].includes(event.event) || (event.event === 'assistant_delta' && String(event.delta || '').trim())))
+    .sort((left, right) => left.firstEventOrder - right.firstEventOrder)
+}
+
+function assistantEntryMatchesMessage(entry, message) {
+  if (entry.kind !== 'assistant') return false
+  if (entry.messageId && message.messageId && entry.messageId === message.messageId) return true
+  return String(entry.text || '').trim() === String(message.content || '').trim()
+}
+
+/**
+ * The only conversation read model consumed by the renderer. Messages and
+ * workflow events may remain separate durable stores, but they are normalized,
+ * deduplicated and joined here before any HTML is produced.
+ */
+export function reduceAgentTimeline({ messages = [], events = [] } = {}) {
+  const normalized = normalizeMessages(messages)
+  const groups = eventGroups(events)
+  const turns = new Map()
+
+  const ensureTurn = (key, turnId = '') => {
+    if (!turns.has(key)) turns.set(key, { key, turnId, messages: [], workflow: null, order: Number.MAX_SAFE_INTEGER })
+    return turns.get(key)
+  }
+
+  normalized.forEach((message) => {
+    const key = message.turnId ? `turn:${message.turnId}` : `message:${messageIdentity(message, message.sourceIndex)}`
+    const turn = ensureTurn(key, message.turnId)
+    turn.messages.push(message)
+    turn.order = Math.min(turn.order, message.order)
+  })
+
+  groups.forEach((group) => {
+    const key = `turn:${group.turnId}`
+    const turn = turns.get(key)
+    // A workflow without a durable user message is an orphan diagnostic. It
+    // stays in the audit log, but it must not become a visible chat segment.
+    if (!turn || !turn.messages.some((message) => message.role === 'user')) return
+    if (!turn.workflow) turn.workflow = { ...group, events: [] }
+    turn.workflow.events.push(...group.events)
+    turn.workflow.firstEventOrder = Math.min(turn.workflow.firstEventOrder, group.firstEventOrder)
+    turn.workflow.runId = group.runId || turn.workflow.runId
+  })
+
+  return [...turns.values()]
+    .map((turn) => {
+      const workflowEntries = turn.workflow ? projectWorkflowTimeline(turn.workflow.events) : []
+      const visibleMessages = turn.messages
+        .sort((left, right) => left.order - right.order || left.sourceIndex - right.sourceIndex)
+        .filter((message) => message.role !== 'assistant' || !workflowEntries.some((entry) => assistantEntryMatchesMessage(entry, message)))
+      return {
+        ...turn,
+        messages: visibleMessages,
+        workflow: turn.workflow && turn.workflow.events.length ? turn.workflow : null,
+      }
+    })
+    .filter((turn) => turn.messages.length || turn.workflow)
+    .sort((left, right) => left.order - right.order)
+}
+
+/**
+ * Preserve optimistic messages by stable identity, never by array length.
+ * Persisted messages remain authoritative; a local assistant snapshot only
+ * wins when it contains more text for the same identity.
  */
 export function mergeSessionMessages(persistedMessages, localMessages) {
   const persisted = Array.isArray(persistedMessages) ? persistedMessages : []
   const local = Array.isArray(localMessages) ? localMessages : []
-  if (local.length <= persisted.length) return persisted
-  return [...persisted, ...local.slice(persisted.length)]
+  const merged = persisted.map((message) => ({ ...message }))
+  const indexes = new Map()
+  merged.forEach((message, index) => indexes.set(messageIdentity(message, index), index))
+  local.forEach((message, index) => {
+    const identity = messageIdentity(message, index)
+    const existingIndex = indexes.get(identity)
+    if (existingIndex === undefined) {
+      indexes.set(identity, merged.length)
+      merged.push({ ...message })
+      return
+    }
+    const existing = merged[existingIndex]
+    if (messageRole(message) === 'assistant' && messageText(message).length > messageText(existing).length) merged[existingIndex] = { ...existing, ...message }
+  })
+  return merged
 }
 
 export function isSameAgentRun(event, runId) {

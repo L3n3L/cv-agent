@@ -63,6 +63,15 @@ test('frontend keeps the measured A4 fit when Agent is open on desktop widths', 
   assert.match(app, /function syncPreviewDocumentHeight\(frame\)/)
   assert.match(app, /frame\.dataset\.documentHeight/)
   assert.match(app, /frameWrap\.dataset\.pageCount/)
+  assert.match(app, /const serverRenderId = String\(body\.context\?\.renderId \|\| ''\)/)
+  assert.match(app, /const previewState = new Set\(\['rendered', 'measured', 'accepted', 'needs_revision'\]\)/)
+  assert.match(app, /const canMeasure = liveState\.workflowState === 'rendered'/)
+  assert.match(app, /frame\.contentWindow\?\.__cvagentMetrics\?\.metrics/)
+  assert.match(app, /function handlePreviewMetricsMessage\(event\)/)
+  assert.match(app, /payload\.source !== 'cvagent-resume-preview'/)
+  assert.match(app, /window\.addEventListener\('message', handlePreviewMetricsMessage\)/)
+  assert.match(app, /persistPreviewMeasurement\(frame, \{ sessionId, renderId \}, payload\)/)
+  assert.doesNotMatch(app, /Math\.max\(content\.scrollHeight, content\.querySelector\('\.cvagent-resume-flow'\)\?\.scrollHeight \|\| 0\)/)
   assert.match(app, /payload\.event === 'render_succeeded'[\s\S]*?liveState\.renderId = payload\.renderId[\s\S]*?syncPreviewFrames\(\)/)
 })
 
@@ -85,9 +94,13 @@ test('Agent chat keeps one state reducer for streaming, replay, and failed-run r
   assert.match(app, /syncActiveSessionFromServer\(\{ preserveLiveTurn: failed \|\| payload\.outcome === 'paused' \}\)/)
   assert.match(app, /queuedRunSyncOptions/)
   assert.match(app, /eventsWithStreamingFallback/)
+  assert.match(app, /reduceAgentTimeline\(\{ messages, events \}\)/)
   assert.match(app, /reportClientEvent\?\.\('agent_sse_error'/)
   assert.match(chat, /runEventStatus\(group\.events\)/)
+  assert.match(chat, /function renderTimeline\(\{ timeline = \[\]/)
+  assert.doesNotMatch(chat, /Legacy sessions without turnId/)
   assert.match(state, /export function mergeSessionMessages/)
+  assert.match(state, /export function reduceAgentTimeline/)
   assert.match(server, /readWorkflowEvents\(sessionId, replayCursor\)/)
   assert.match(server, /Subscribe before reading the durable log/)
   assert.match(server, /agent_sse_connected/)
@@ -96,23 +109,19 @@ test('Agent chat keeps one state reducer for streaming, replay, and failed-run r
 test('Agent chat keeps paused and resumed phases in one run timeline', async () => {
   const chatSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat.js'), 'utf8')
   const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
-  assert.match(chatSource, /paused production turn may emit[\s\S]*?remain one chronological workflow card/)
-  assert.match(chatSource, /const stableRunId = String\(event\.runId \|\| ''\)\.trim\(\)/)
-  assert.match(chatSource, /if \(!stableTurnId && !stableRunId\) \{[\s\S]*?legacySequences/)
 
   const context = vm.createContext({ window: {}, console })
   vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
-  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus } from './agent-chat-state.js'", ''), context)
   const html = context.window.cvAgentChat.renderTimeline({
-    messages: [{ role: 'user', content: '检查简历' }, { role: 'assistant', content: '已完成检查' }],
-    events: [
+    timeline: [{ turnId: 'turn-1', messages: [{ role: 'user', content: '检查简历' }, { role: 'assistant', content: '已完成检查' }], workflow: { turnId: 'turn-1', events: [
       { event: 'agent_run_started', runId: 'run-1' },
       { event: 'tool_call_started', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read' },
       { event: 'agent_run_finished', runId: 'run-1', outcome: 'paused' },
       { event: 'agent_run_started', runId: 'run-1' },
       { event: 'tool_call_succeeded', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read', durationMs: 10 },
       { event: 'agent_run_finished', runId: 'run-1', outcome: 'success' },
-    ],
+    ] } }],
     sessionReady: true,
   })
   assert.equal((html.match(/aria-label="Agent 工作流"/g) || []).length, 1)
@@ -127,10 +136,9 @@ test('Agent chat does not split tools on empty assistant lifecycle events', asyn
   const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
   const context = vm.createContext({ window: {}, console })
   vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
-  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus } from './agent-chat-state.js'", ''), context)
   const html = context.window.cvAgentChat.renderTimeline({
-    messages: [{ role: 'user', content: '检查简历', turnId: 'turn-1' }],
-    events: [
+    timeline: [{ turnId: 'turn-1', messages: [{ role: 'user', content: '检查简历', turnId: 'turn-1' }], workflow: { turnId: 'turn-1', events: [
       { sequence: 1, event: 'agent_run_started', runId: 'run-1', turnId: 'turn-1' },
       { sequence: 2, event: 'tool_call_started', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'resume_read' },
       { sequence: 3, event: 'tool_call_succeeded', runId: 'run-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'resume_read', durationMs: 10 },
@@ -142,7 +150,7 @@ test('Agent chat does not split tools on empty assistant lifecycle events', asyn
       { sequence: 9, event: 'assistant_delta', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-2', delta: '检查完成' },
       { sequence: 10, event: 'assistant_message_finished', runId: 'run-1', turnId: 'turn-1', messageId: 'assistant-2' },
       { sequence: 11, event: 'agent_run_finished', runId: 'run-1', turnId: 'turn-1', outcome: 'success' },
-    ],
+    ] } }],
     sessionReady: true,
   })
   assert.equal((html.match(/<details class="tool-group run-trace done">/g) || []).length, 1)
@@ -158,15 +166,9 @@ test('Agent chat omits an assistant-only lifecycle with no visible text', async 
   const stateSource = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
   const context = vm.createContext({ window: {}, console })
   vm.runInContext(stateSource.replace(/export function /g, 'function ').replace(/export \{ PAUSED_EVENTS \}/g, ''), context)
-  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'", ''), context)
+  vm.runInContext(chatSource.replace("import { projectWorkflowTimeline, runEventStatus } from './agent-chat-state.js'", ''), context)
   const html = context.window.cvAgentChat.renderTimeline({
-    messages: [{ role: 'user', content: '你好' }, { role: 'assistant', content: '你好，我是 CVAgent。' }],
-    events: [
-      { sequence: 1, event: 'agent_run_started', runId: 'run-1' },
-      { sequence: 2, event: 'assistant_message_started', runId: 'run-1', messageId: 'assistant-1' },
-      { sequence: 3, event: 'assistant_message_finished', runId: 'run-1', messageId: 'assistant-1', assistantChars: 0 },
-      { sequence: 4, event: 'agent_run_finished', runId: 'run-1', outcome: 'success' },
-    ],
+    timeline: [{ turnId: 'turn-1', messages: [{ role: 'user', content: '你好' }, { role: 'assistant', content: '你好，我是 CVAgent。' }] }],
     sessionReady: true,
   })
   assert.doesNotMatch(html, /aria-label="Agent 工作流"/)

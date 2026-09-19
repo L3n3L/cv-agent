@@ -23,11 +23,15 @@ export function suggestPresentationAdjustment({ task, template, presentation, re
   if (![TASK_STATES.MEASURED, TASK_STATES.NEEDS_REVISION, TASK_STATES.ACCEPTED].includes(task?.state)) {
     const error = new Error('presentation suggestions are available only after a current measurement')
     error.code = 'MEASUREMENT_REQUIRED'
+    error.failureClass = 'requires_transition'
+    error.details = { currentState: task?.state || null, recoveryTool: 'browser_measurement' }
     throw error
   }
   if (!measurement || measurement.renderId !== task?.context?.renderId) {
     const error = new Error('a current browser measurement is required before proposing layout changes')
     error.code = 'MEASUREMENT_REQUIRED'
+    error.failureClass = 'requires_transition'
+    error.details = { currentState: task?.state || null, recoveryTool: 'browser_measurement' }
     throw error
   }
   const layout = currentLayout(template, presentation, resumePath)

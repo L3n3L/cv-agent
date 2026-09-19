@@ -73,6 +73,30 @@ export function recordTemplateChange(task, artifact = {}) {
   return next
 }
 
+export function reopenResumeDraft(task) {
+  if (!task?.context?.contentVersion) {
+    throw Object.assign(new Error('a current draft is required before reopening'), {
+      code: 'DRAFT_REQUIRED',
+      failureClass: 'requires_transition',
+      details: { currentState: task?.state || null, draftAvailable: false, recoveryTool: 'resume_write' },
+    })
+  }
+  if (task.state === TASK_STATES.DRAFTING) return clone(task)
+  if (![TASK_STATES.BLOCKED, TASK_STATES.NEEDS_REVISION].includes(task.state)) {
+    throw Object.assign(new Error(`cannot reopen a ${task.state} resume task`), {
+      code: 'DRAFT_REOPEN_NOT_ALLOWED',
+      failureClass: 'requires_transition',
+      details: { currentState: task.state, draftAvailable: true, recoveryTool: 'resume_prepare' },
+    })
+  }
+  const next = move(task, TASK_STATES.DRAFTING)
+  next.context.renderId = null
+  next.artifacts = { contentVersion: next.context.contentVersion, templateRevision: next.context.templateRevision, renderId: null }
+  next.measurements = null
+  next.blockers = []
+  return next
+}
+
 export function recordRender(task, artifact = {}) {
   assertContextMatch(task.context, artifact, 'render')
   if (task.state !== TASK_STATES.DRAFTING) throw new Error('render requires a current draft')
@@ -84,10 +108,42 @@ export function recordRender(task, artifact = {}) {
   return next
 }
 
+const MEASUREMENT_REPLAYABLE_STATES = new Set([
+  TASK_STATES.MEASURED,
+  TASK_STATES.ACCEPTED,
+  TASK_STATES.NEEDS_REVISION,
+  TASK_STATES.USER_CONFIRMED,
+  TASK_STATES.SAVED,
+])
+
+export function isMeasurementReplay(task, measurement = {}) {
+  const recorded = task?.measurements
+  const renderId = String(measurement.renderId || '')
+  return Boolean(
+    recorded &&
+    MEASUREMENT_REPLAYABLE_STATES.has(task.state) &&
+    renderId &&
+    String(task.context?.renderId || '') === renderId &&
+    String(recorded.renderId || '') === renderId,
+  )
+}
+
 export function recordMeasurement(task, measurement = {}) {
   assertContextMatch(task.context, measurement, 'measurement')
-  if (task.state !== TASK_STATES.RENDERED) throw new Error('measurement requires a current render')
-  if (String(measurement.renderId) !== String(task.context.renderId)) throw new Error('measurement renderId is stale')
+  if (task.state !== TASK_STATES.RENDERED) {
+    throw Object.assign(new Error('measurement requires a current render'), {
+      code: 'MEASUREMENT_NOT_ALLOWED',
+      failureClass: 'stale_context',
+      details: { currentState: task.state, renderId: task.context.renderId || null, recoveryTool: task.context.contentVersion ? 'resume_reopen_draft' : 'resume_write' },
+    })
+  }
+  if (String(measurement.renderId) !== String(task.context.renderId)) {
+    throw Object.assign(new Error('measurement renderId is stale'), {
+      code: 'MEASUREMENT_STALE',
+      failureClass: 'stale_context',
+      details: { currentState: task.state, renderId: task.context.renderId || null },
+    })
+  }
   if (!Number.isFinite(Number(measurement.pageCount))) throw new Error('measurement pageCount is required')
   const next = move(task, TASK_STATES.MEASURED)
   next.measurements = { renderId: String(measurement.renderId), contentVersion: String(measurement.contentVersion || task.context.contentVersion), templateRevision: String(measurement.templateRevision || task.context.templateRevision), pageCount: Number(measurement.pageCount), occupancy: Array.isArray(measurement.occupancy) ? measurement.occupancy.map(Number).filter(Number.isFinite) : [], overflow: Boolean(measurement.overflow) }

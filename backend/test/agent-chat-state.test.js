@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isSameAgentRun, mergeSessionMessages, projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from '../../frontend/react/src/runtime/agent-chat-state.js'
+import { isSameAgentRun, mergeSessionMessages, projectWorkflowTimeline, reduceAgentTimeline, runEventStatus, workflowGroupHasAssistantText } from '../../frontend/react/src/runtime/agent-chat-state.js'
 
 test('agent chat state keeps failure visible and does not downgrade it to done', () => {
   assert.equal(runEventStatus([{ event: 'agent_run_started' }, { event: 'agent_run_finished', outcome: 'success' }]), 'done')
@@ -63,4 +63,55 @@ test('agent chat state ignores stale run events', () => {
   assert.equal(isSameAgentRun({ runId: 'run-current' }, 'run-current'), true)
   assert.equal(isSameAgentRun({ runId: 'run-old' }, 'run-current'), false)
   assert.equal(isSameAgentRun({ event: 'agent_run_started' }, 'run-current'), true)
+})
+
+test('agent chat reducer keeps multi-turn messages and workflow in one chronological source', () => {
+  const timeline = reduceAgentTimeline({
+    messages: [
+      { role: 'user', content: '第一轮', turnId: 'turn-1', messageId: 'user-turn-1', sequence: 1 },
+      { role: 'assistant', content: '第一轮完成', turnId: 'turn-1', messageId: 'assistant-turn-1', sequence: 5 },
+      { role: 'user', content: '第二轮', turnId: 'turn-2', messageId: 'user-turn-2', sequence: 6 },
+      { role: 'assistant', content: '第二轮完成', turnId: 'turn-2', messageId: 'assistant-turn-2', sequence: 10 },
+    ],
+    events: [
+      { event: 'agent_run_started', turnId: 'turn-1', runId: 'run-1', sequence: 2 },
+      { event: 'tool_call_started', turnId: 'turn-1', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read', sequence: 3 },
+      { event: 'tool_call_succeeded', turnId: 'turn-1', runId: 'run-1', toolCallId: 'tool-1', toolName: 'resume_read', sequence: 4 },
+      { event: 'agent_run_finished', turnId: 'turn-1', runId: 'run-1', outcome: 'success', sequence: 5 },
+      { event: 'agent_run_started', turnId: 'turn-2', runId: 'run-2', sequence: 7 },
+      { event: 'tool_call_started', turnId: 'turn-2', runId: 'run-2', toolCallId: 'tool-2', toolName: 'resume_check', sequence: 8 },
+      { event: 'tool_call_succeeded', turnId: 'turn-2', runId: 'run-2', toolCallId: 'tool-2', toolName: 'resume_check', sequence: 9 },
+    ],
+  })
+  assert.deepEqual(timeline.map((turn) => turn.turnId), ['turn-1', 'turn-2'])
+  assert.deepEqual(timeline.map((turn) => turn.messages.filter((message) => message.role === 'user')[0].content), ['第一轮', '第二轮'])
+  assert.deepEqual(timeline.map((turn) => turn.workflow.events[0].turnId), ['turn-1', 'turn-2'])
+})
+
+test('agent chat reducer never appends an orphan workflow below newer messages', () => {
+  const timeline = reduceAgentTimeline({
+    messages: [{ role: 'user', content: '第二轮', turnId: 'turn-2', sequence: 8 }],
+    events: [
+      { event: 'agent_run_started', turnId: 'legacy-turn', runId: 'legacy-run', sequence: 1 },
+      { event: 'tool_call_started', turnId: 'legacy-turn', runId: 'legacy-run', toolCallId: 'tool-legacy', toolName: 'resume_read', sequence: 2 },
+    ],
+  })
+  assert.deepEqual(timeline.map((turn) => turn.turnId), ['turn-2'])
+  assert.equal(timeline[0].workflow, null)
+})
+
+test('agent chat reducer does not compare workflow sequence with message timestamps', () => {
+  const timeline = reduceAgentTimeline({
+    messages: [
+      { role: 'user', content: '17:17', turnId: 'turn-old', timestamp: '2026-09-19T09:17:00.000Z' },
+      { role: 'user', content: '17:30', turnId: 'turn-new', timestamp: '2026-09-19T09:30:00.000Z' },
+    ],
+    events: [
+      { event: 'agent_run_started', turnId: 'turn-old', runId: 'run-old', sequence: 100 },
+      { event: 'tool_call_started', turnId: 'turn-old', runId: 'run-old', toolCallId: 'tool-old', toolName: 'resume_read', sequence: 101 },
+      { event: 'agent_run_started', turnId: 'turn-new', runId: 'run-new', sequence: 10 },
+      { event: 'tool_call_started', turnId: 'turn-new', runId: 'run-new', toolCallId: 'tool-new', toolName: 'resume_check', sequence: 11 },
+    ],
+  })
+  assert.deepEqual(timeline.map((turn) => turn.messages[0].content), ['17:17', '17:30'])
 })

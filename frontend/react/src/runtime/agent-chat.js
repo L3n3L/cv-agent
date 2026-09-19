@@ -1,4 +1,4 @@
-import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText } from './agent-chat-state.js'
+import { projectWorkflowTimeline, runEventStatus } from './agent-chat-state.js'
 
 ;(function initAgentChat(global) {
   const toolLabels = {
@@ -228,67 +228,6 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
 
-  function normalizedMessages(messages) {
-    return (Array.isArray(messages) ? messages : [])
-      .filter((message) => ['user', 'assistant'].includes(message?.role))
-      .map((message) => ({
-        role: message.role,
-        content: message.content,
-        timestamp: message.timestamp,
-        turnId: message.turnId,
-        messageId: message.messageId || message.id,
-        runId: message.runId,
-      }))
-      .filter((message) => String(message.content || '').trim())
-  }
-
-  function eventGroups(events) {
-    const groups = []
-    const byKey = new Map()
-    const legacySequences = new Map()
-    const legacyActiveKeys = new Map()
-    let agentRunStarted = false
-    for (const event of Array.isArray(events) ? events : []) {
-      if (event.event === 'agent_run_started') agentRunStarted = true
-      // Bootstrap, automatic A4 measurement, and background verification are
-      // system activity. They belong to the audit log, not the conversation.
-      if (!agentRunStarted) continue
-      const stableTurnId = String(event.turnId || '').trim()
-      const stableRunId = String(event.runId || '').trim()
-      const baseKey = stableTurnId || stableRunId || String(event.taskId || 'current')
-      // New events carry a per-turn runId. A paused production turn may emit
-      // several agent_run_started records while it waits for measurement and
-      // resumes; those records must remain one chronological workflow card.
-      // Older persisted events have no runId, so retain the old start-based
-      // split only for that legacy shape.
-      let key = baseKey
-      if (!stableTurnId && !stableRunId) {
-        if (event.event === 'agent_run_started') {
-          const sequence = (legacySequences.get(baseKey) || 0) + 1
-          legacySequences.set(baseKey, sequence)
-          legacyActiveKeys.set(baseKey, `${baseKey}:${sequence}`)
-        }
-        key = legacyActiveKeys.get(baseKey) || `${baseKey}:0`
-      }
-      if (!byKey.has(key)) {
-        const group = { key, turnId: stableTurnId || '', runId: stableRunId || baseKey, events: [] }
-        byKey.set(key, group)
-        groups.push(group)
-      }
-      byKey.get(key).events.push(event)
-    }
-    // Ordinary chat and read-only answers can complete without any tool call.
-    // Do not render an empty "preparing tools" card for those turns; a tool
-    // timeline is useful only when it contains an actual tool lifecycle.
-    const isToolEvent = (event) => ['tool_call_started', 'tool_call_succeeded', 'tool_call_failed'].includes(event.event)
-    const isVisibleAssistantEvent = (event) => event.event === 'assistant_delta' && String(event.delta || '').trim()
-    // A message lifecycle can be opened and closed without producing any
-    // user-visible text (for example, the model answers through the snapshot
-    // path). That lifecycle is already represented by the message snapshot;
-    // keeping it here would create an orphan "正在处理" block.
-    return groups.filter((group) => group.events.some((event) => isToolEvent(event) || isVisibleAssistantEvent(event)))
-  }
-
   function formatSummaryValue(key, value) {
     if (typeof value === 'boolean') return value ? '是' : '否'
     if (key === 'occupancy' && Array.isArray(value)) return value.map((item) => `${Math.round(Number(item) * 100)}%`).join(' / ')
@@ -360,59 +299,20 @@ import { projectWorkflowTimeline, runEventStatus, workflowGroupHasAssistantText 
     return `<section class="run-trace ${escapeHtml(status)}" aria-label="Agent 工作流" data-run-index="${index}">${rows.join('')}</section>`
   }
 
-  function renderInterleavedTimeline(messages, groups, { activeRun = false } = {}) {
-    const normalized = normalizedMessages(messages)
-    if (!normalized.length) return groups.map((group, index) => renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
-
-    // A completed turn is represented in two stores: the append-only event
-    // rail (needed for live order) and the final session message snapshot.
-    // The explicit turnId is the only join key. Never pair a workflow group
-    // with a message by array position: old workflows can be replayed, a
-    // continuation can share a turn, and a failed run may have no assistant
-    // snapshot at all.
-    const segments = []
-    normalized.forEach((message) => segments.push(message))
-    const groupsByTurn = new Map()
-    groups.forEach((group, index) => {
-      const key = String(group.turnId || '').trim()
-      if (!key) return
-      const list = groupsByTurn.get(key) || []
-      list.push({ group, index })
-      groupsByTurn.set(key, list)
-    })
-    const renderedGroups = new Set()
+  function renderTimeline({ timeline = [], sessionReady, activeRun = false, activeTurnId = '', error = '' }) {
     const content = []
     let messageIndex = 0
-    segments.forEach((message) => {
-      const turnId = String(message.turnId || '').trim()
-      if (message.role === 'user') {
-        content.push(renderMessage(message, messageIndex))
-        const turnGroups = groupsByTurn.get(turnId) || []
-        turnGroups.forEach(({ group, index }) => {
-          content.push(renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
-          renderedGroups.add(index)
-        })
-        messageIndex += 1
-        return
+    timeline.forEach((turn, turnIndex) => {
+      turn.messages
+        .filter((message) => message.role === 'user')
+        .forEach((message) => content.push(renderMessage(message, messageIndex++)))
+      if (turn.workflow) {
+        content.push(renderRunGroup(turn.workflow, turnIndex, { activeRun: activeRun && turn.turnId === activeTurnId }))
       }
-      const turnGroups = groupsByTurn.get(turnId) || []
-      const groupRendersAssistant = turnGroups.some(({ group }) => workflowGroupHasAssistantText(group))
-      if (!groupRendersAssistant) content.push(renderMessage(message, messageIndex))
-      messageIndex += 1
+      turn.messages
+        .filter((message) => message.role !== 'user')
+        .forEach((message) => content.push(renderMessage(message, messageIndex++)))
     })
-
-    // Legacy sessions without turnId and diagnostics without a matching
-    // snapshot remain visible, but are never inserted by ordinal position.
-    groups.forEach((group, index) => {
-      if (renderedGroups.has(index)) return
-      content.push(renderRunGroup(group, index, { activeRun: activeRun && index === groups.length - 1 }))
-    })
-    return content
-  }
-
-  function renderTimeline({ messages, events, sessionReady, activeRun = false, error = '' }) {
-    const groups = eventGroups(events)
-    const content = renderInterleavedTimeline(messages, groups, { activeRun })
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)
     if (!content.length) {
       content.push(`<div class="chat-empty"><strong>${sessionReady ? '开始对话' : '选择工作区'}</strong></div>`)

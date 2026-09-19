@@ -1,4 +1,4 @@
-import { isSameAgentRun, mergeSessionMessages } from './agent-chat-state.js'
+import { isSameAgentRun, mergeSessionMessages, reduceAgentTimeline } from './agent-chat-state.js'
 
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
@@ -238,10 +238,18 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
       liveState.presentation = body.presentation || liveState.presentation
       liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
       liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
-      liveState.renderId = body.context?.renderId || liveState.renderId
       liveState.workflowState = body.state || session.status || liveState.workflowState
+      const serverRenderId = String(body.context?.renderId || '')
+      const previewState = new Set(['rendered', 'measured', 'accepted', 'needs_revision'])
+      const hasCurrentPreview = Boolean(serverRenderId && previewState.has(liveState.workflowState))
+      if (hasCurrentPreview) liveState.renderId = serverRenderId
+      else {
+        liveState.renderId = ''
+        liveState.measuredRenderKey = ''
+        liveState.measurement = null
+      }
       liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
-      liveState.measurement = session.taskRef?.current?.measurements || null
+      if (hasCurrentPreview) liveState.measurement = session.taskRef?.current?.measurements || null
       liveState.agentTurnId = session.activeTurnId || liveState.agentTurnId
       liveState.agentRunActive = session.runState === 'running'
       liveState.runState = session.runState || 'idle'
@@ -281,6 +289,65 @@ async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
   return activeRunSyncPromise
 }
 
+function previewMeasurementPayload(frame, payload = null) {
+  const metrics = payload?.metrics || frame.contentWindow?.__cvagentMetrics?.metrics
+  const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
+  if (!metrics || !Array.isArray(metrics.pages) || !metrics.pages.length) return null
+  const occupancy = metrics.pages.map((page) => Number(page.occupancyRatio)).filter(Number.isFinite).map((ratio) => Number(clamp(ratio, 0, 1).toFixed(3)))
+  const pageCount = Number(metrics.pageCount || occupancy.length || pages.length)
+  const overflow = Boolean(metrics.overflow)
+  if (!pageCount || occupancy.length !== pageCount) return null
+  return { pageCount, occupancy, overflow }
+}
+
+function persistPreviewMeasurement(frame, identity = {}, payload = null) {
+  const sessionId = identity.sessionId || liveState.sessionId
+  const renderId = identity.renderId || liveState.renderId
+  const key = `${sessionId}:${renderId}`
+  if (!sessionId || !renderId || !frame || frame.classList.contains('template-real-thumb')) return false
+  if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return false
+  const canMeasure = liveState.workflowState === 'rendered' && ['waiting_for_measurement', 'idle'].includes(liveState.runState)
+  if (!canMeasure || liveState.measuredRenderKey === key || measurementInFlightKey === key) return false
+  const measurement = previewMeasurementPayload(frame, payload)
+  if (!measurement) return false
+  measurementInFlightKey = key
+  liveState.measurementPending = true
+  void api.post('/api/agent/measure', { sessionId, renderId, ...measurement })
+    .then(({ body }) => {
+      // A later template/content mutation can complete while this browser
+      // callback is in flight. Never let an old render overwrite the
+      // current task state or start a follow-up Agent run.
+      if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
+      liveState.measuredRenderKey = key
+      liveState.measurement = body.measurement || null
+      liveState.workflowState = body.state || liveState.workflowState
+      liveState.runState = body.runState || (body.autoContinuation?.scheduled ? 'waiting_for_measurement' : 'idle')
+      const blockers = body.verification?.blockers || []
+      liveState.blockerCount = blockers.length
+      updateHeader()
+      // Keep the sidebar's persisted-session summary in step with the
+      // browser measurement. Without this refresh the central workbench
+      // could correctly unlock "保存正式版" while the selected session
+      // still looked blocked in the left navigation.
+      void loadSessionsForWorkspace()
+      const requiresInitialIntake = blockers.includes('尚未完成首次信息收集')
+      if (requiresInitialIntake) showToast('请打开 Agent，补充基本信息后继续制作')
+      if (body.autoContinuation?.scheduled) showToast(`真实 A4 测量已回传，Agent 正在继续调整（第 ${body.autoContinuation.round} 轮）`)
+      if (body.autoContinuation?.exhausted) showToast('自动修订预算已用完，请在 Agent 中继续说明调整方向')
+      if (body.state === 'needs_revision' && !requiresInitialIntake && !body.autoContinuation?.scheduled && !body.autoContinuation?.exhausted) showToast('真实 A4 测量未通过，请进入制作模式继续调整')
+    })
+    .catch((error) => {
+      const current = frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId
+      const activeRun = ['running', 'waiting_for_measurement'].includes(liveState.runState)
+      if (current && activeRun) showToast(`预览测量失败：${errorText(error)}`)
+    })
+    .finally(() => {
+      if (measurementInFlightKey === key) measurementInFlightKey = ''
+      liveState.measurementPending = false
+    })
+  return true
+}
+
 function measurePreviewFrame(frame, identity = {}) {
   const sessionId = identity.sessionId || liveState.sessionId
   const renderId = identity.renderId || liveState.renderId
@@ -290,54 +357,27 @@ function measurePreviewFrame(frame, identity = {}) {
   frame.addEventListener('load', () => {
     if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
     syncPreviewDocumentHeight(frame)
-    if (liveState.measuredRenderKey === key || measurementInFlightKey === key) return
-    const documentRoot = frame.contentDocument?.documentElement
-    const pages = [...(frame.contentDocument?.querySelectorAll('.cvagent-resume-page') || [])]
-    if (!documentRoot || !pages.length) return
-    const occupancy = pages.map((page) => {
-      const content = page.querySelector('.cvagent-resume-page-content') || page
-      const available = Math.max(1, content.clientHeight)
-      const used = Math.min(available, Math.max(content.scrollHeight, content.querySelector('.cvagent-resume-flow')?.scrollHeight || 0))
-      return Number(clamp(used / available, 0, 1).toFixed(3))
-    })
-    const pageCount = Number(documentRoot.dataset.pageCount || pages.length)
-    const overflow = documentRoot.dataset.pageOverflow === 'true' || pages.some((page) => page.scrollHeight > page.clientHeight + 1)
-    measurementInFlightKey = key
-    liveState.measurementPending = true
-    void api.post('/api/agent/measure', { sessionId, renderId, pageCount, occupancy, overflow })
-      .then(({ body }) => {
-        // A later template/content mutation can complete while this browser
-        // callback is in flight. Never let an old render overwrite the
-        // current task state or start a follow-up Agent run.
-        if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return
-        liveState.measuredRenderKey = key
-        liveState.measurement = body.measurement || null
-        liveState.workflowState = body.state || liveState.workflowState
-        liveState.runState = body.runState || (body.autoContinuation?.scheduled ? 'waiting_for_measurement' : 'idle')
-        const blockers = body.verification?.blockers || []
-        liveState.blockerCount = blockers.length
-        updateHeader()
-        // Keep the sidebar's persisted-session summary in step with the
-        // browser measurement. Without this refresh the central workbench
-        // could correctly unlock "保存正式版" while the selected session
-        // still looked blocked in the left navigation.
-        void loadSessionsForWorkspace()
-        const requiresInitialIntake = blockers.includes('尚未完成首次信息收集')
-        if (requiresInitialIntake) showToast('请打开 Agent，补充基本信息后继续制作')
-        if (body.autoContinuation?.scheduled) showToast(`真实 A4 测量已回传，Agent 正在继续调整（第 ${body.autoContinuation.round} 轮）`)
-        if (body.autoContinuation?.exhausted) showToast('自动修订预算已用完，请在 Agent 中继续说明调整方向')
-        if (body.state === 'needs_revision' && !requiresInitialIntake && !body.autoContinuation?.scheduled && !body.autoContinuation?.exhausted) showToast('真实 A4 测量未通过，请进入制作模式继续调整')
-      })
-      .catch((error) => {
-        const current = frame.dataset.measureKey === key && liveState.sessionId === sessionId && liveState.renderId === renderId
-        const activeRun = ['running', 'waiting_for_measurement'].includes(liveState.runState)
-        if (current && activeRun) showToast(`预览测量失败：${errorText(error)}`)
-      })
-      .finally(() => {
-        if (measurementInFlightKey === key) measurementInFlightKey = ''
-        liveState.measurementPending = false
-      })
+    // The renderer also publishes the same payload through postMessage. The
+    // short retry window keeps older render artifacts compatible when their
+    // metric IIFE runs just after the iframe load event.
+    persistPreviewMeasurement(frame, { sessionId, renderId })
+    ;[0, 50, 150, 300].forEach((delay) => window.setTimeout(() => {
+      if (frame.dataset.measureKey === key) persistPreviewMeasurement(frame, { sessionId, renderId })
+    }, delay))
   })
+}
+
+function handlePreviewMetricsMessage(event) {
+  const payload = event?.data
+  if (!payload || payload.source !== 'cvagent-resume-preview' || !payload.metrics) return
+  if (event.origin && event.origin !== window.location.origin) return
+  const frames = $$('.direct-preview-stage iframe, .full-real-frame')
+  const frame = frames.find((candidate) => candidate.contentWindow === event.source)
+  if (!frame) return
+  const renderId = String(payload.renderId || '')
+  const sessionId = liveState.sessionId
+  if (!sessionId || !renderId || renderId !== liveState.renderId) return
+  persistPreviewMeasurement(frame, { sessionId, renderId }, payload)
 }
 
 function syncPreviewDocumentHeight(frame) {
@@ -603,10 +643,12 @@ async function restoreSession(sessionId) {
     liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
     liveState.templateName = liveState.templates.find((item) => item.id === liveState.templateId)?.name || liveState.templateId
     liveState.targetPages = session.taskRef?.current?.targetPages || liveState.targetPages
-    liveState.renderId = body.context?.renderId || ''
     liveState.workflowState = body.state || session.status || 'idle'
+    const restoredRenderId = String(body.context?.renderId || '')
+    const restoredPreviewState = new Set(['rendered', 'measured', 'accepted', 'needs_revision'])
+    liveState.renderId = restoredRenderId && restoredPreviewState.has(liveState.workflowState) ? restoredRenderId : ''
     liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
-    liveState.measurement = session.taskRef?.current?.measurements || null
+    liveState.measurement = liveState.renderId ? session.taskRef?.current?.measurements || null : null
     liveState.measuredRenderKey = liveState.measurement && liveState.renderId ? `${liveState.sessionId}:${liveState.renderId}` : ''
     updateConnectionStatus()
     renderSessionList([session])
@@ -1020,11 +1062,14 @@ function eventsWithStreamingFallback() {
 }
 
 function renderChatRefined() {
+  const messages = (Array.isArray(liveState.messages) ? liveState.messages : []).map((message) => ({ ...message, content: chatMessageText(message) }))
+  const events = eventsWithStreamingFallback()
+  const conversationTimeline = reduceAgentTimeline({ messages, events })
   const timeline = window.cvAgentChat.renderTimeline({
-    messages: (Array.isArray(liveState.messages) ? liveState.messages : []).map((message) => ({ ...message, content: chatMessageText(message) })),
-    events: eventsWithStreamingFallback(),
+    timeline: conversationTimeline,
     sessionReady: Boolean(liveState.sessionId),
     activeRun: liveState.agentRunActive,
+    activeTurnId: liveState.agentTurnId,
     error: liveState.agentRunError,
   })
   return `<div class="chat-layout"><div class="chat-stream" data-testid="agent-timeline" role="log" aria-live="polite">${timeline}</div><form class="composer" id="composer" data-testid="agent-composer"><textarea id="messageInput" rows="2" placeholder="描述你要怎么改，例如：把实习经历改成 AI 产品经理投递版"></textarea><div class="composer-foot"><span><kbd>Enter</kbd> 发送</span><button type="submit">发送</button></div></form></div>`
@@ -1638,6 +1683,10 @@ window.addEventListener('cvagent:a4-pane-mounted', () => {
   bindPreviewFit()
   updateHeader()
 })
+// The renderer publishes metrics after it has finished pagination and layout
+// measurement. Treat this message as the canonical browser-to-session bridge;
+// iframe load probing remains only a compatibility fallback.
+window.addEventListener('message', handlePreviewMetricsMessage)
 
 updateConnectionStatus()
 bindResizableLayout()

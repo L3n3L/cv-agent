@@ -75,7 +75,9 @@ export async function runAgentWithStreaming(agent, input, options = {}) {
         // The canonical CVAgent tool runner already emits the persisted,
         // redacted tool lifecycle. Awaiting output here only drains the
         // framework projection and prevents backpressure from stalling it.
-        await call?.output
+        const output = Promise.resolve(call?.output)
+        output.catch(() => {})
+        await output.catch(() => null)
       }
     })()
     : Promise.resolve()

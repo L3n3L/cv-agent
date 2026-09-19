@@ -19,6 +19,14 @@ function resolveWorkflowFields(spec, stage, payload) {
   return fields || {}
 }
 
+function failureDetails(error) {
+  const details = error?.details && typeof error.details === 'object' ? error.details : {}
+  const errorCode = String(error?.code || 'TOOL_FAILED')
+  const failureClass = String(error?.failureClass || details.failureClass || (errorCode === 'TOOL_FAILED' ? 'fatal' : 'requires_transition'))
+  const recoveryTool = error?.recoveryTool || details.recoveryTool || null
+  return { errorCode, failureClass, recoveryTool, currentState: details.currentState || null, draftAvailable: details.draftAvailable === true }
+}
+
 export async function runResumeTool(task, toolName, handler, options = {}) {
   if (typeof handler !== 'function') throw new Error('tool handler is required')
   const logger = options.logger || createLogger({ component: 'cvagent-tool', context: contextFields(task.context) })
@@ -60,8 +68,9 @@ export async function runResumeTool(task, toolName, handler, options = {}) {
     await options.onSuccess?.({ toolName: String(toolName), result, task })
     return result
   } catch (error) {
-    await logger.error('tool_call_failed', { ...base, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED'), errorMessage: String(error?.message || error) })
-    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_FAILED, task: taskWithSession, toolName: String(toolName), toolCallId, durationMs: Date.now() - startedAt, errorCode: String(error?.code || 'TOOL_FAILED') })
+    const failure = failureDetails(error)
+    await logger.error('tool_call_failed', { ...base, durationMs: Date.now() - startedAt, ...failure, errorMessage: String(error?.message || error) })
+    await emitToolEvent(options, { event: WORKFLOW_EVENTS.TOOL_CALL_FAILED, task: taskWithSession, toolName: String(toolName), toolCallId, durationMs: Date.now() - startedAt, ...failure })
     await emit('failed', null, error)
     throw error
   }

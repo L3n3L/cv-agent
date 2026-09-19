@@ -74,6 +74,20 @@ test('frontend route changes reset scroll and SSE proxy tolerates client disconn
   assert.match(proxy, /proxyLog\('info', 'api_proxy_client_closed'/)
 })
 
+test('Agent chat keeps one state reducer for streaming, replay, and failed-run recovery', async () => {
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
+  const chat = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat.js'), 'utf8')
+  const state = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'agent-chat-state.js'), 'utf8')
+  const server = await fs.readFile(path.join(frontendRoot, '..', 'backend', 'src', 'server.js'), 'utf8')
+  assert.match(app, /isSameAgentRun\(payload, liveState\.agentRunId\)/)
+  assert.match(app, /syncActiveSessionFromServer\(\{ preserveLiveTurn: failed \}\)/)
+  assert.match(app, /reportClientEvent\?\.\('agent_sse_error'/)
+  assert.match(chat, /runEventStatus\(group\.events\)/)
+  assert.match(state, /export function mergeSessionMessages/)
+  assert.match(server, /const replay = Array\.isArray\(session\.workflowEvents\)/)
+  assert.match(server, /agent_sse_connected/)
+})
+
 test('React/Vite shell owns the DOM contract and bundled runtime boundary', async () => {
   const reactRoot = path.join(frontendRoot, 'react')
   const packageJson = JSON.parse(await fs.readFile(path.join(reactRoot, 'package.json'), 'utf8'))

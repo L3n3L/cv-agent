@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 const clientEventSchema = z.object({
-  event: z.enum(['client_error', 'unhandled_rejection', 'resource_error']),
+  event: z.enum(['client_error', 'unhandled_rejection', 'resource_error', 'agent_sse_error']),
   message: z.string().trim().min(1).max(500),
   source: z.string().trim().max(300).optional(),
   stack: z.string().trim().max(4000).optional(),
@@ -10,6 +10,9 @@ const clientEventSchema = z.object({
   line: z.number().int().min(0).max(1_000_000).optional(),
   column: z.number().int().min(0).max(1_000_000).optional(),
   userAgent: z.string().trim().max(300).optional(),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
+  runId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
+  workflowEvent: z.string().trim().max(120).optional(),
 }).strict()
 
 function redactClientText(value) {

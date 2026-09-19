@@ -6,7 +6,7 @@ const FILE_PATTERN = /^agent-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.ndjson$/
 
 function parseArgs(argv) {
   const [command = 'summary', ...rest] = argv
-  const args = { command, directory: DEFAULT_DIRECTORY, limit: 50, event: '', level: '', since: '' }
+  const args = { command, directory: DEFAULT_DIRECTORY, limit: 50, event: '', level: '', since: '', sessionId: '', runId: '', toolCallId: '' }
   for (let index = 0; index < rest.length; index += 1) {
     const item = rest[index]
     if (item === '--dir') args.directory = path.resolve(rest[++index] || DEFAULT_DIRECTORY)
@@ -14,6 +14,9 @@ function parseArgs(argv) {
     else if (item === '--event') args.event = String(rest[++index] || '')
     else if (item === '--level') args.level = String(rest[++index] || '')
     else if (item === '--since') args.since = String(rest[++index] || '')
+    else if (item === '--session') args.sessionId = String(rest[++index] || '')
+    else if (item === '--run') args.runId = String(rest[++index] || '')
+    else if (item === '--tool-call') args.toolCallId = String(rest[++index] || '')
   }
   return args
 }
@@ -36,6 +39,9 @@ function matches(entry, args) {
   if (args.event && entry.event !== args.event) return false
   if (args.level && entry.level !== args.level) return false
   if (args.since && String(entry.timestamp || '') < args.since) return false
+  if (args.sessionId && entry.sessionId !== args.sessionId) return false
+  if (args.runId && entry.runId !== args.runId) return false
+  if (args.toolCallId && entry.toolCallId !== args.toolCallId) return false
   return true
 }
 

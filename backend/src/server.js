@@ -131,6 +131,7 @@ async function publishWorkflowEvent(broker, session, event = {}, sessionStore = 
     ...(event.executionMode ? { executionMode: event.executionMode } : {}),
     ...(event.outcome ? { outcome: event.outcome } : {}),
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    ...(event.assistantChars !== undefined ? { assistantChars: Math.max(0, Number(event.assistantChars) || 0) } : {}),
     ...(event.errorCode ? { errorCode: event.errorCode } : {}),
     ...(event.delta ? { delta: safeProgressText(event.delta, 2000) } : {}),
     ...(event.phase || progress.phase ? { phase: safeProgressText(event.phase || progress.phase, 48) } : {}),
@@ -165,10 +166,22 @@ async function runAgentTurn(session, message, options = {}) {
   if (!agent || (typeof agent.invoke !== 'function' && typeof agent.streamEvents !== 'function')) throw Object.assign(new Error('agentFactory must return an invokable agent'), { code: 'AGENT_INVALID' })
   const input = { messages: [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message }] }
   if (executionMode !== AGENT_EXECUTION_MODES.READ_ONLY) input.files = await resumeProductionSkillFiles()
+  const assistantStreamChars = new Map()
   const streamed = await runAgentWithStreaming(agent, input, {
-    onAssistantStart: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
-    onAssistantDelta: ({ messageId, delta }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
-    onAssistantFinish: ({ messageId }) => notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode }),
+    onAssistantStart: async ({ messageId }) => {
+      assistantStreamChars.set(messageId, 0)
+      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, { ...task, sessionId: session.sessionId }, { messageId, mode, executionMode })
+      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_STARTED, messageId, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+    },
+    onAssistantDelta: async ({ messageId, delta }) => {
+      assistantStreamChars.set(messageId, (assistantStreamChars.get(messageId) || 0) + String(delta || '').length)
+      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_DELTA, messageId, delta, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+    },
+    onAssistantFinish: async ({ messageId }) => {
+      const assistantChars = assistantStreamChars.get(messageId) || 0
+      await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, { ...task, sessionId: session.sessionId }, { messageId, assistantChars, mode, executionMode })
+      await notifyWorkflowEvent(options.onWorkflowEvent, { event: WORKFLOW_EVENTS.ASSISTANT_MESSAGE_FINISHED, messageId, assistantChars, task: { ...task, sessionId: session.sessionId }, mode, executionMode })
+    },
   })
   const result = streamed.result
   if (Array.isArray(result?.messages)) session.messages = result.messages
@@ -501,8 +514,13 @@ async function handleAgentEvents(request, response, options) {
       'connection': 'keep-alive',
       'x-accel-buffering': 'no',
     })
+    const replay = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
+    const unsubscribe = options.workflowEvents.subscribe(sessionId, response)
     response.write(`event: ready\ndata: ${JSON.stringify({ sessionId, state: session.taskRef.current?.state || session.status })}\n\n`)
-    options.workflowEvents.subscribe(sessionId, response)
+    for (const event of replay) response.write(`event: workflow\ndata: ${JSON.stringify(event)}\n\n`)
+    await options.serverLogger.info('agent_sse_connected', { sessionId, replayedEvents: replay.length })
+    response.once('close', () => { void options.serverLogger.info('agent_sse_disconnected', { sessionId }) })
+    return unsubscribe
   } catch (error) {
     const code = String(error?.code || 'AGENT_EVENTS_FAILED')
     sendJson(response, code === 'SESSION_NOT_FOUND' ? 404 : 400, { ok: false, errorCode: code, errorMessage: String(error?.message || error) })

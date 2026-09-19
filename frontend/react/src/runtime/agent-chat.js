@@ -1,4 +1,6 @@
-(function initAgentChat(global) {
+import { runEventStatus } from './agent-chat-state.js'
+
+;(function initAgentChat(global) {
   const toolLabels = {
     workspace_info: '读取工作区',
     resume_prepare: '准备简历任务',
@@ -229,13 +231,6 @@
       .filter((message) => String(message.content || '').trim())
   }
 
-  function eventStatus(events) {
-    if (events.some((event) => ['verification_blocked', 'tool_call_failed', 'render_failed', 'verification_failed'].includes(event.event))) return 'blocked'
-    if (events.some((event) => event.event === 'agent_run_finished')) return 'done'
-    if (events.some((event) => event.event === 'agent_run_started')) return 'running'
-    return 'idle'
-  }
-
   function eventGroups(events) {
     const groups = []
     const byKey = new Map()
@@ -324,7 +319,7 @@
   }
 
   function renderRunGroup(group, index, { open = false } = {}) {
-    const status = eventStatus(group.events)
+    const status = runEventStatus(group.events)
     const rows = processRows(group.events)
     const statusText = statusLabels[status] || status
     const runRows = rows.length ? rows.map((row) => {
@@ -333,7 +328,8 @@
       return `<details class="tool-row" ${row.state === 'blocked' ? 'open' : ''}><summary><i class="tool-state ${escapeHtml(row.state)}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><time>${escapeHtml(duration || statusLabels[row.state] || '')}</time></summary>${detail}</details>`
     }).join('') : '<div class="tool-empty">正在处理</div>'
     const summary = rows.length ? `已执行 ${rows.length} 项工具` : '正在准备工具'
-    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${status === 'running' || open ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
+    const expanded = status === 'running' || status === 'failed' || status === 'blocked' || open
+    return `<details class="tool-group ${escapeHtml(status)}" aria-label="Agent 制作流程" data-run-index="${index}" ${expanded ? 'open' : ''}><summary class="run-label"><b>本轮简历制作</b><span>${escapeHtml(summary)} · ${escapeHtml(statusText)}</span></summary>${runRows}</details>`
   }
 
   function renderInterleavedTimeline(messages, groups, { openLatest = false } = {}) {
@@ -393,7 +389,7 @@
 
   function renderTimeline({ messages, events, sessionReady, activeRun = false, streamingAssistantText = '', error = '' }) {
     const groups = eventGroups(events)
-    const content = renderInterleavedTimeline(messages, groups, { openLatest: true })
+    const content = renderInterleavedTimeline(messages, groups, { openLatest: activeRun || Boolean(error) })
     const streaming = renderStreamingState(streamingAssistantText)
     if (streaming) content.push(streaming)
     if (error) content.push(`<div class="agent-error" role="alert"><strong>本轮处理未完成</strong><span>${escapeHtml(error)}</span></div>`)

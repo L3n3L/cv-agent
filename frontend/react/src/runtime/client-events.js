@@ -19,6 +19,9 @@
       line: Number.isInteger(details.line) ? details.line : undefined,
       column: Number.isInteger(details.column) ? details.column : undefined,
       userAgent: limit(navigator.userAgent, 300),
+      sessionId: limit(details.sessionId, 120),
+      runId: limit(details.runId, 120),
+      workflowEvent: limit(details.workflowEvent, 120),
     }
     const body = JSON.stringify(Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined && value !== '')))
     try {

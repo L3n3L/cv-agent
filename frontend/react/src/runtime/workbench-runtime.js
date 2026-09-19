@@ -1,3 +1,5 @@
+import { isSameAgentRun, mergeSessionMessages } from './agent-chat-state.js'
+
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 
@@ -30,6 +32,7 @@ const liveState = {
   measurementPending: false,
   measuredRenderKey: '',
   agentEvents: [],
+  agentRunId: '',
   agentRunActive: false,
   agentRunError: '',
   streamingAssistantText: '',
@@ -44,6 +47,7 @@ let measurementInFlightKey = ''
 let workflowEventSource = null
 let workflowEventSessionId = ''
 let activeRunSyncPromise = null
+let lastWorkflowSseErrorAt = 0
 let previewResizeObserver = null
 let previewFitFrame = 0
 
@@ -108,18 +112,35 @@ function connectWorkflowEvents() {
   workflowEventSource?.close()
   workflowEventSessionId = liveState.sessionId
   workflowEventSource = new EventSource(`/api/agent/events?sessionId=${encodeURIComponent(liveState.sessionId)}`)
+  workflowEventSource.onerror = () => {
+    const now = Date.now()
+    if (now - lastWorkflowSseErrorAt < 3000) return
+    lastWorkflowSseErrorAt = now
+    if (liveState.agentRunActive) updateSessionStatus('Agent 连接异常，正在重连')
+    window.CVAgent?.reportClientEvent?.('agent_sse_error', {
+      message: 'Agent SSE connection error; EventSource will retry automatically',
+      source: '/api/agent/events',
+      sessionId: liveState.sessionId,
+      runId: liveState.agentRunId,
+      workflowEvent: 'connection_error',
+    })
+  }
   workflowEventSource.addEventListener('workflow', (event) => {
     let payload
     try { payload = JSON.parse(event.data) } catch { return }
     if (payload.sessionId !== liveState.sessionId) return
     liveState.agentEvents = mergeWorkflowEvents(liveState.agentEvents, [payload])
     if (payload.event === 'agent_run_started') {
+      liveState.agentRunId = payload.runId || ''
       liveState.agentRunActive = true
       liveState.agentRunError = ''
       liveState.streamingAssistantText = ''
       liveState.streamingMessageId = ''
     }
+    const staleRun = Boolean(payload.runId && liveState.agentRunId && payload.runId !== liveState.agentRunId)
+    if (staleRun && ['assistant_delta', 'agent_run_finished', 'render_succeeded'].includes(payload.event)) return
     if (payload.event === 'assistant_delta') {
+      if (!isSameAgentRun(payload, liveState.agentRunId)) return
       if (payload.messageId && liveState.streamingMessageId !== payload.messageId) {
         liveState.streamingAssistantText = ''
         liveState.streamingMessageId = payload.messageId
@@ -140,8 +161,12 @@ function connectWorkflowEvents() {
     }
     if (payload.event === 'agent_run_finished') {
       liveState.agentRunActive = false
-      if (payload.outcome === 'failed') liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
-      void syncActiveSessionFromServer()
+      const failed = payload.outcome === 'failed'
+      if (failed) {
+        liveState.agentRunError = payload.errorCode || '本轮 Agent 执行失败'
+        updateSessionStatus('Agent 执行失败')
+      }
+      void syncActiveSessionFromServer({ preserveLiveTurn: failed })
     }
     if (payload.event === 'tool_call_succeeded' && ['template_copy', 'template_save', 'template_restore'].includes(payload.toolName)) {
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
@@ -150,8 +175,11 @@ function connectWorkflowEvents() {
   })
 }
 
-async function syncActiveSessionFromServer() {
+async function syncActiveSessionFromServer({ preserveLiveTurn = false } = {}) {
   if (!liveState.sessionId || activeRunSyncPromise) return activeRunSyncPromise
+  const localMessages = liveState.messages
+  const localStreamingAssistantText = liveState.streamingAssistantText
+  const localStreamingMessageId = liveState.streamingMessageId
   activeRunSyncPromise = (async () => {
     try {
       const { body } = await api.get(`/api/session?sessionId=${encodeURIComponent(liveState.sessionId)}`)
@@ -162,7 +190,8 @@ async function syncActiveSessionFromServer() {
       liveState.resumePath = body.source?.path || session.resumePath || liveState.resumePath
       liveState.sourceContent = body.source?.content || liveState.sourceContent
       liveState.draftContent = body.draft?.content || liveState.draftContent
-      liveState.messages = Array.isArray(session.messages) ? session.messages : liveState.messages
+      const persistedMessages = Array.isArray(session.messages) ? session.messages : []
+      liveState.messages = preserveLiveTurn ? mergeSessionMessages(persistedMessages, localMessages) : persistedMessages
       liveState.agentEvents = mergeWorkflowEvents(liveState.agentEvents, session.workflowEvents)
       liveState.presentation = body.presentation || liveState.presentation
       liveState.templateId = body.context?.templateId || session.templateId || liveState.templateId
@@ -172,17 +201,26 @@ async function syncActiveSessionFromServer() {
       liveState.blockerCount = session.taskRef?.current?.blockers?.length || 0
       liveState.measurement = session.taskRef?.current?.measurements || null
       liveState.agentRunActive = session.runState === 'running'
-      if (!liveState.agentRunActive) {
+      if (preserveLiveTurn) {
+        liveState.agentRunActive = false
+        liveState.streamingAssistantText = localStreamingAssistantText
+        liveState.streamingMessageId = localStreamingMessageId
+      } else if (!liveState.agentRunActive) {
         liveState.streamingAssistantText = ''
         liveState.streamingMessageId = ''
+        liveState.agentRunId = ''
       }
       renderAgentChat({ scrollToBottom: true })
       syncPreviewFrames()
       updateHeader()
+      if (liveState.agentRunError) updateSessionStatus('Agent 执行失败')
+      else if (liveState.agentRunActive) updateSessionStatus('Agent 处理中')
       void refreshWorkspaceTemplates({ rerender: true }).catch((error) => showToast(`模板库刷新失败：${errorText(error)}`))
       void loadSessionsForWorkspace()
     } catch (error) {
       liveState.agentRunError = errorText(error)
+      liveState.agentRunActive = false
+      updateSessionStatus('Agent 状态同步失败')
       renderAgentChat({ scrollToBottom: true })
     } finally {
       activeRunSyncPromise = null
@@ -490,6 +528,7 @@ async function restoreSession(sessionId) {
     liveState.messages = Array.isArray(session.messages) ? session.messages : []
     liveState.agentEvents = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
     liveState.agentRunActive = false
+    liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
@@ -528,6 +567,7 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
   liveState.sessionId = ''
   liveState.agentEvents = []
   liveState.agentRunActive = false
+  liveState.agentRunId = ''
   liveState.agentRunError = ''
   liveState.streamingAssistantText = ''
   liveState.streamingMessageId = ''
@@ -545,6 +585,7 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.messages = Array.isArray(body.messages) ? body.messages : []
     liveState.agentEvents = Array.isArray(body.workflowEvents) ? body.workflowEvents : []
     liveState.agentRunActive = false
+    liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
@@ -568,6 +609,7 @@ async function bootstrapWorkspace(workspace, { createResume = false } = {}) {
     liveState.sessionId = ''
     liveState.agentEvents = []
     liveState.agentRunActive = false
+    liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''
@@ -1383,6 +1425,7 @@ function bindChat() {
     liveState.messages.push({ role: 'user', content: value })
     input.value = ''
     liveState.agentRunActive = true
+    liveState.agentRunId = ''
     liveState.agentRunError = ''
     liveState.streamingAssistantText = ''
     liveState.streamingMessageId = ''

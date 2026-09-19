@@ -41,3 +41,14 @@ resume_prepare → resume_read → resume_check → resume_write
 浏览器或测试代码再回传真实/受控 metrics，并断言 `resume_finalize`、过期 `renderId` 拒绝及显式保存门。这样可以稳定测试产品工序，而不让模型随机性掩盖工作流回归。
 
 维护规则：新增或修改 canonical 工具、事件名称、状态转换、SSE schema 时，必须同步更新 `backend/test/agent-chat-integration.test.js` 与本夹具；不要把用户简历、密钥或原始日志写入脚本或提交到仓库。
+
+## Agent 会话日志定位
+
+服务端日志默认写入 `backend/logs/agent-YYYY-MM-DD.ndjson`，日志只保留脱敏后的事件和结构化摘要。按截图中的 `sessionId`、`runId` 或工具调用 ID 定位一轮：
+
+```powershell
+npm run logs:tail -- --session session_xxx --run run-xxx --limit 200
+npm run logs -- summary --session session_xxx --run run-xxx
+```
+
+也可以继续叠加 `--event tool_call_failed`、`--level error` 或 `--since 2026-09-19T04:00:00.000Z`。这样可以区分“模型没发事件、SSE 没送到浏览器、前端没归约”三类问题。

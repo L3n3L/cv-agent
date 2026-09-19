@@ -38,6 +38,10 @@ async function proxyApi(request, response, url) {
     if (contentType) responseHeaders['content-type'] = contentType
     response.writeHead(upstream.status, responseHeaders)
     if (contentType?.includes('text/event-stream') && upstream.body) {
+      // The API is an SSE stream. Flush headers and disable Nagle buffering so
+      // each upstream event can reach EventSource while the agent is running.
+      response.flushHeaders?.()
+      response.socket?.setNoDelay?.(true)
       const reader = upstream.body.getReader()
       let clientClosed = false
       let streamFinished = false

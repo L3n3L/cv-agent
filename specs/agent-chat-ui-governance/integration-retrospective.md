@@ -148,7 +148,7 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 - SSE 结束时先完成 UI 状态归约，再做 session 同步，避免同步请求反向抹掉增量状态；
 - 统一更新 `routeStatus`、Agent 时间线和输入框可用状态。
 
-已完成第一轮：状态合并和失败收尾已集中到 `agent-chat-state.js` 与 `syncActiveSessionFromServer()`，仍需浏览器验证断线与失败截图。
+已完成第一轮：状态合并和失败收尾已集中到 `agent-chat-state.js` 与 `syncActiveSessionFromServer()`；实时 SSE 的首包刷新仍需单独验证。
 
 ### 阶段 B：抽出纯事件归约层
 
@@ -183,8 +183,8 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 
 ## 7. 验收清单
 
-- [x] 用户发送消息后，文本增量、工具行和最终回答在同一 Agent 时间线中按事件顺序出现；
-- [x] 工具调用过程中，工具行可见且显示进行中；工具结束后记录不消失；
+- [~] 用户发送消息后，文本增量、工具行和最终回答在同一 Agent 时间线中按事件顺序出现；事件已生成并能回放，但刚刚这次真实浏览器运行暴露出实时小包刷新延迟，已补 SSE header flush / `setNoDelay`，需要重新做运行中截图验收；
+- [~] 工具调用过程中，工具行可见且显示进行中；工具结束后记录不消失；完成态回放已验证，实时可见性待修复后复测；
 - [x] Agent 失败时，页面状态、运行组和错误信息一致，不再显示“仍在处理”；
 - [x] 刷新 Agent 面板后，已完成会话的消息和工具记录可恢复；
 - [x] 旧 run 的延迟事件不会覆盖新 run；
@@ -199,6 +199,7 @@ delta?           // 仅 assistant_delta，且只走实时 SSE
 ## 9. 本轮验收记录
 
 - 自动化：backend `npm test` 67/67 通过；React `typecheck` 与 `build` 通过；
-- 真实浏览器：`http://127.0.0.1:3191/react/` 刷新后，历史 Agent 消息、工具组和失败工具记录均可从 SSE 回放恢复；再次发送只读请求后，工具调用记录保留，最终回答正常出现；浏览器 error/warn 日志为空；
-- 服务端日志：已看到 `agent_sse_connected`、`assistant_message_started`、`tool_call_started/succeeded/failed`、`assistant_message_finished`、`agent_run_finished`，可用 `sessionId + runId + toolCallId` 回溯；
-- 当前浏览器里的 `measurement requires a current render` 属于已有历史会话在重启后回放的旧测量失败，不是本轮 Agent UI 代码异常；新只读请求正常完成。
+- 真实浏览器：刷新回放、工具组保留和失败工具记录已验证；但刚刚运行中只先看到“收到真实素材”，工具过程直到结束后才集中出现，因此“完成后能回放”不能等同于“运行中实时可见”；本轮已补 SSE 首包刷新与 TCP 小包即时发送，需重新截取运行中状态确认；
+- 服务端日志：本轮真实失败可定位到 `session_683075da-c83a-41b4-bee8-5028e7f05336` / `run-694f7e52-7dcc-4773-b7dc-a27a5832a471`。日志原始时间是 UTC：`04:34:51Z` 开始，`04:35:43Z` 结束，换算香港时间为 `12:34:51`–`12:35:43`；期间存在连续的 `tool_call_started/succeeded`，并非没有工具调用；
+- 失败根因：`render_61a2ee80-9208-46c7-b58f-d6a31888721c` 虽然已生成，但浏览器测量请求对当前 render 没有形成有效匹配，随后 `presentation_suggest` 报 `MEASUREMENT_REQUIRED`，`resume_metrics` 报 `measurement requires a current render`，最终是实际的 `AGENT_RUN_FAILED`，不是前端伪造；
+- 当前修复：后端 `/api/agent/events` 和前端 SSE 代理均在响应头后立即 `flushHeaders()`，并设置 `socket.setNoDelay(true)`，避免事件都滞留到任务结束才被 EventSource 一次性消费。

@@ -514,6 +514,11 @@ async function handleAgentEvents(request, response, options) {
       'connection': 'keep-alive',
       'x-accel-buffering': 'no',
     })
+    // Flush the SSE headers before replay/live events. This keeps the browser
+    // connection observable immediately instead of allowing a proxy/socket
+    // buffer to hold the first event batch until the run completes.
+    response.flushHeaders?.()
+    response.socket?.setNoDelay?.(true)
     const replay = Array.isArray(session.workflowEvents) ? session.workflowEvents : []
     const unsubscribe = options.workflowEvents.subscribe(sessionId, response)
     response.write(`event: ready\ndata: ${JSON.stringify({ sessionId, state: session.taskRef.current?.state || session.status })}\n\n`)

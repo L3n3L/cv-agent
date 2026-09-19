@@ -83,10 +83,24 @@ createServer(async (request, response) => {
     await proxyApi(request, response, url)
     return
   }
-  const reactRequest = url.pathname === '/react' || url.pathname.startsWith('/react/')
-  const rootRequest = url.pathname === '/'
-  const publicRoot = reactRequest || rootRequest ? reactDist : root
-  const publicPath = reactRequest ? url.pathname.replace(/^\/react\/?/, '/') : rootRequest ? '/' : url.pathname
+  if (url.pathname === '/') {
+    response.writeHead(302, { location: '/react/', 'cache-control': 'no-store' })
+    response.end()
+    return
+  }
+  if (url.pathname === '/react') {
+    response.writeHead(302, { location: '/react/', 'cache-control': 'no-store' })
+    response.end()
+    return
+  }
+  const reactRequest = url.pathname.startsWith('/react/')
+  if (!reactRequest) {
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+    response.end('Not Found')
+    return
+  }
+  const publicRoot = reactDist
+  const publicPath = url.pathname.replace(/^\/react\/?/, '/')
   const requested = publicPath === '/' ? '/index.html' : publicPath
   const file = normalize(join(publicRoot, requested))
   if (!file.startsWith(publicRoot)) { response.writeHead(403); response.end('Forbidden'); return }

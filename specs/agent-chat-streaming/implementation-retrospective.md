@@ -79,9 +79,9 @@ Agent 时间线顺序固定为：
 - `backend/src/server.js`：把增量回答、阶段摘要和工具身份加入 SSE/持久化事件；
 - `backend/src/core/tool-runner.js`：为每次工具调用生成 `toolCallId`；
 - `backend/src/core/session-store.js`：允许安全持久化增量字段和思路摘要；
-- `frontend/agent-chat.js`：线性时间线、真实工具调用组、Markdown 增量回答；
-- `frontend/app.js`：订阅并消费 SSE 增量状态；
-- `frontend/styles.css`：保持 Codex 风格的黑灰、细边线和低装饰呈现。
+- `frontend/react/src/runtime/agent-chat.js`：线性时间线、真实工具调用组、Markdown 增量回答；
+- `frontend/react/src/runtime/workbench-runtime.js`：订阅并消费 SSE 增量状态；
+- `frontend/react/src/styles.css`：保持 Codex 风格的黑灰、细边线和低装饰呈现。
 
 ## 6. 验证结果
 

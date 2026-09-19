@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import '../../styles.css'
+import './styles.css'
 import { PaneHeader } from './components/PaneHeader'
-import { mountA4Pane, mountMarkdownPane, unmountLegacyReactPanes } from './legacy-bridge'
+import { mountA4Pane, mountMarkdownPane, unmountReactPanes } from './react-pane-bridge'
 import type { MarkdownPaneOptions } from './features/markdown/MarkdownPane'
 import type { A4PaneOptions } from './features/preview/A4Pane'
 
@@ -11,7 +11,7 @@ declare global {
     CVAgentReact?: {
       mountMarkdownPane: (container: Element, options: MarkdownPaneOptions) => void
       mountA4Pane: (container: Element, options: A4PaneOptions) => void
-      unmountLegacyReactPanes: () => void
+      unmountReactPanes: () => void
     }
   }
 }
@@ -93,22 +93,20 @@ function AgentPane() {
   )
 }
 
-function loadLegacyScripts() {
-  const legacyBase = import.meta.env.DEV ? 'http://127.0.0.1:3191' : ''
-  const scripts = ['api-client.js', 'client-events.js', 'agent-chat.js', 'app.js']
-  return scripts.reduce((promise, script) => promise.then(() => new Promise<void>((resolve, reject) => {
-    const element = document.createElement('script')
-    element.src = `${legacyBase}/${script}`
-    element.onload = () => resolve()
-    element.onerror = () => reject(new Error(`加载旧业务模块失败：${script}`))
-    document.body.append(element)
-  })), Promise.resolve())
+async function loadRuntimeModules() {
+  // These modules are still DOM-oriented, but are now bundled with the
+  // React entrypoint and kept in one explicit runtime boundary. Importing
+  // them after the shell mounts preserves their initialization contract.
+  await import('./runtime/api-client.js')
+  await import('./runtime/client-events.js')
+  await import('./runtime/agent-chat.js')
+  await import('./runtime/workbench-runtime.js')
 }
 
 function AppShell() {
   useEffect(() => {
-    window.CVAgentReact = { mountMarkdownPane, mountA4Pane, unmountLegacyReactPanes }
-    void loadLegacyScripts().catch((error) => {
+    window.CVAgentReact = { mountMarkdownPane, mountA4Pane, unmountReactPanes }
+    void loadRuntimeModules().catch((error) => {
       const toast = document.getElementById('toast')
       if (toast) toast.textContent = error instanceof Error ? error.message : String(error)
       console.error(error)

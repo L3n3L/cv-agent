@@ -1437,7 +1437,7 @@ function bindChat() {
 
 function renderRoute(route) {
   currentRoute = route
-  window.CVAgentReact?.unmountLegacyReactPanes?.()
+  window.CVAgentReact?.unmountReactPanes?.()
   $('#routeView').scrollTop = 0
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.route === route))
   if (route !== 'workbench') setPreviewOpen(false)

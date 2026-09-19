@@ -216,8 +216,7 @@ test('standalone server exposes an independent health endpoint', async () => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { ok: true, product: 'CVAgent' })
     const home = await fetch(`http://127.0.0.1:${address.port}/`)
-    assert.equal(home.status, 200)
-    assert.match(await home.text(), /CVAgent/)
+    assert.equal(home.status, 404)
   } finally {
     await closeServer(server)
   }

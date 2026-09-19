@@ -27,7 +27,7 @@ $env:CVAGENT_API_ORIGIN = 'http://127.0.0.1:3180'
 node server.mjs
 ```
 
-前端地址：`http://127.0.0.1:3191/`
+前端地址：`http://127.0.0.1:3191/react/`（根路径会重定向到这里）
 
 前端通过 `/api/*` 代理访问后端，避免浏览器直接连接 MCP 或依赖插件目录。后续前端 API Client 接通后，页面的会话、工作区、模板、简历和预览全部以 backend 返回值为准。
 
@@ -39,6 +39,6 @@ node server.mjs
 - 业务能力、接口、Agent 和渲染只在 `backend/` 修改；
 - 接口变更必须同步更新对接文档和测试；
 - 不把 `.env`、`.cvagent`、`logs`、`node_modules` 提交到仓库；
-- 不在前端恢复插件运行时依赖。
+- 不在前端恢复插件运行时依赖；当前 DOM 适配运行时统一位于 `frontend/react/src/runtime/`。
 
 当前工程与对接文档见 [docs/README.md](docs/README.md)。已完成阶段的规格与复盘保留在归档区，不作为后续实施入口。

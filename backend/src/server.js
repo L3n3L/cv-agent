@@ -27,23 +27,6 @@ import { resumeProductionSkillFiles } from './agent/resume-production-skill.js'
 
 const port = Number(process.env.CVAGENT_PORT || 3180)
 const logger = createLogger({ component: 'cvagent-server' })
-const publicRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public')
-
-async function serveStatic(request, response) {
-  if (request.method !== 'GET') return false
-  const pathname = request.url === '/' ? '/index.html' : request.url.split('?')[0]
-  let relative
-  try { relative = decodeURIComponent(pathname).replace(/^\/+/, '') } catch { return false }
-  if (!relative || relative.split('/').includes('..')) return false
-  const filePath = path.resolve(publicRoot, relative)
-  if (path.relative(publicRoot, filePath).startsWith('..')) return false
-  const content = await fs.readFile(filePath).catch(() => null)
-  if (!content) return false
-  const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' }
-  response.writeHead(200, { 'content-type': types[path.extname(filePath)] || 'application/octet-stream', 'cache-control': 'no-store' })
-  response.end(content)
-  return true
-}
 
 function assistantText(result) {
   const messages = Array.isArray(result?.messages) ? result.messages : []
@@ -277,10 +260,6 @@ export function createServer(options = {}) {
     response.setHeader('x-cvagent-request-id', requestId)
     void requestLogger.info('http_request_started', { method: request.method, route })
     response.once('finish', () => { void requestLogger.info('http_request_finished', { method: request.method, route, statusCode: response.statusCode, durationMs: Date.now() - startedAt, ...(response.__cvagentErrorCode ? { errorCode: response.__cvagentErrorCode } : {}) }) })
-    if (request.method === 'GET' && (request.url === '/' || request.url?.startsWith('/app.') || request.url?.startsWith('/styles.') || request.url?.startsWith('/workbench.css'))) {
-      void serveStatic(request, response).then((served) => { if (!served) sendJson(response, 404, { error: 'not_found' }) })
-      return
-    }
     if (request.method === 'GET' && request.url === '/health') {
       sendJson(response, 200, { ok: true, product: 'CVAgent' })
       return

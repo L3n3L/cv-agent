@@ -10,7 +10,7 @@ export function mountMarkdownPane(container: Element, options: MarkdownPaneOptio
   root.render(<MarkdownPane {...options} />)
 }
 
-export function unmountLegacyReactPanes() {
+export function unmountReactPanes() {
   for (const root of roots) root.unmount()
   roots.clear()
 }

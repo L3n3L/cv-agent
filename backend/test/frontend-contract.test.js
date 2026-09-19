@@ -6,9 +6,9 @@ import path from 'node:path'
 const frontendRoot = path.resolve(import.meta.dirname, '..', '..', 'frontend')
 
 test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height peer', async () => {
-  const html = await fs.readFile(path.join(frontendRoot, 'index.html'), 'utf8')
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
-  assert.match(html, /<section class="route-view" id="routeView"[\s\S]*?<div class="route-content" id="routeContent"><\/div><\/section>[\s\S]*?<\/main>[\s\S]*?class="resize-handle resize-assistant"[\s\S]*?id="assistantDrawer"/)
+  const source = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'main.tsx'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
+  assert.match(source, /<div className="route-content" id="routeContent" \/>[\s\S]*?id="assistantDrawer"/)
   assert.match(css, /\.app-shell\.assistant-open \{ grid-template-columns:var\(--sidebar-width\) 1px minmax\(0,1fr\) 1px var\(--assistant-width\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ position:static; grid-column:5; grid-row:1; width:auto; height:100%;/)
   assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ grid-column:4; grid-row:1; display:block; \}/)
@@ -30,14 +30,14 @@ test('frontend keeps Markdown/A4 in the workbench and Agent as a full-height pee
 })
 
 test('frontend moves the full-height Agent below the workbench on narrow screens', async () => {
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
   assert.match(css, /\.app-shell\.assistant-open \.main-stage \{ grid-column:3; grid-row:1; height:auto; min-height:100vh; \}/)
   assert.match(css, /\.app-shell\.assistant-open \.assistant-drawer \{ grid-column:1 \/ -1; grid-row:2; width:auto; height:min\(680px,70dvh\);/)
   assert.match(css, /\.app-shell\.assistant-open \.resize-assistant \{ display:none; \}/)
 })
 
 test('frontend keeps three columns for desktop-sized 961-1100px viewports', async () => {
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
   assert.match(css, /@media \(min-width:961px\) and \(max-width:1100px\) \{[\s\S]*?grid-template-columns:var\(--sidebar-width\) 1px minmax\(0,1fr\) 1px minmax\(280px,min\(var\(--assistant-width\),32vw\)\);/)
   assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(280px,var\(--editor-width,1fr\)\) 1px minmax\(280px,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-pane \{ grid-column:auto; grid-row:auto; \}/)
@@ -46,8 +46,8 @@ test('frontend keeps three columns for desktop-sized 961-1100px viewports', asyn
 })
 
 test('frontend keeps the measured A4 fit when Agent is open on desktop widths', async () => {
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
-  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
   assert.match(css, /@media \(min-width:961px\) \{[\s\S]*?\.app-shell\.assistant-open \.workbench-split \{ display:grid; width:100%; min-width:0; grid-template-columns:minmax\(280px,var\(--editor-width,1fr\)\) 1px minmax\(280px,1fr\); \}/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap,[\s\S]*?width:var\(--preview-width,429px\); height:var\(--preview-height,607px\); transform:none;/)
   assert.match(css, /\.app-shell\.assistant-open \.direct-preview-frame-wrap iframe,[\s\S]*?transform:scale\(var\(--preview-scale,.54\)\);/)
@@ -66,7 +66,7 @@ test('frontend keeps the measured A4 fit when Agent is open on desktop widths', 
 })
 
 test('frontend route changes reset scroll and SSE proxy tolerates client disconnects', async () => {
-  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
   const proxy = await fs.readFile(path.join(frontendRoot, 'server.mjs'), 'utf8')
   assert.match(app, /function renderRoute\(route\) \{[\s\S]*?\$\('#routeView'\)\.scrollTop = 0/)
   assert.match(app, /async function renderTemplates\(\) \{[\s\S]*?const viewport = \$\('#routeView'\)[\s\S]*?viewport\.scrollTop = 0/)
@@ -74,7 +74,7 @@ test('frontend route changes reset scroll and SSE proxy tolerates client disconn
   assert.match(proxy, /proxyLog\('info', 'api_proxy_client_closed'/)
 })
 
-test('React/Vite shell preserves the legacy DOM contract while migration is staged', async () => {
+test('React/Vite shell owns the DOM contract and bundled runtime boundary', async () => {
   const reactRoot = path.join(frontendRoot, 'react')
   const packageJson = JSON.parse(await fs.readFile(path.join(reactRoot, 'package.json'), 'utf8'))
   const source = await fs.readFile(path.join(reactRoot, 'src', 'main.tsx'), 'utf8')
@@ -88,19 +88,23 @@ test('React/Vite shell preserves the legacy DOM contract while migration is stag
   assert.match(source, /mountMarkdownPane/)
   assert.match(source, /mountA4Pane/)
   assert.match(source, /className="workbench|className="resize-handle resize-sidebar"/)
-  assert.match(source, /const scripts = \['api-client\.js', 'client-events\.js', 'agent-chat\.js', 'app\.js'\]/)
+  assert.match(source, /await import\('\.\/runtime\/api-client\.js'\)/)
+  assert.match(source, /await import\('\.\/runtime\/client-events\.js'\)/)
+  assert.match(source, /await import\('\.\/runtime\/agent-chat\.js'\)/)
+  assert.match(source, /await import\('\.\/runtime\/workbench-runtime\.js'\)/)
   assert.match(viteConfig, /base: '\/react\/'/)
   assert.match(proxy, /const reactDist = join\(root, 'react', 'dist'\)/)
-  assert.match(proxy, /const reactRequest = url\.pathname === '\/react' \|\| url\.pathname\.startsWith\('\/react\/'\)/)
-  assert.match(proxy, /const rootRequest = url\.pathname === '\/'/)
-  assert.match(proxy, /const publicRoot = reactRequest \|\| rootRequest \? reactDist : root/)
+  assert.match(proxy, /const reactRequest = url\.pathname\.startsWith\('\/react\/'\)/)
+  assert.match(proxy, /if \(url\.pathname === '\/'\) \{[\s\S]*?location: '\/react\/'/)
+  assert.match(proxy, /const publicRoot = reactDist/)
+  assert.match(source, /function loadRuntimeModules\(\)/)
 })
 
 test('React shell uses one shared header geometry contract across brand, route, panes, and Agent', async () => {
   const reactRoot = path.join(frontendRoot, 'react', 'src')
   const source = await fs.readFile(path.join(reactRoot, 'main.tsx'), 'utf8')
   const header = await fs.readFile(path.join(reactRoot, 'components', 'PaneHeader.tsx'), 'utf8')
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
   assert.match(source, /<PaneHeader[\s\S]*?variant="brand"[\s\S]*?title="CVAgent"/)
   assert.match(source, /<PaneHeader variant="workspace"[\s\S]*?id="workspaceSwitcher"/)
   assert.match(source, /className="sidebar-toggle-icon"[\s\S]*?<rect x="3" y="3" width="18" height="18" rx="4" \/>[\s\S]*?<path d="M9 3v18"/)
@@ -123,11 +127,11 @@ test('React shell uses one shared header geometry contract across brand, route, 
 })
 
 test('React A4 pane preserves the preview contract and post-mount status sync', async () => {
-  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
-  const bridge = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'legacy-bridge.tsx'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
+  const bridge = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'react-pane-bridge.tsx'), 'utf8')
   const pane = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'features', 'preview', 'A4Pane.tsx'), 'utf8')
   const header = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'components', 'PaneHeader.tsx'), 'utf8')
-  const css = await fs.readFile(path.join(frontendRoot, 'styles.css'), 'utf8')
+  const css = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'styles.css'), 'utf8')
   assert.match(app, /id="a4PaneMount" data-testid="a4-pane-root"/)
   assert.match(app, /mountA4Pane\(previewMount, \{[\s\S]*?onApplyTuning: \(values\) => applyPresentationTuning\(values\)/)
   assert.match(app, /syncPreviewFrames\(\)[\s\S]*?bindPreviewFit\(\)[\s\S]*?updateHeader\(\)/)
@@ -145,7 +149,7 @@ test('React A4 pane preserves the preview contract and post-mount status sync', 
 })
 
 test('React A4 manual tuning follows the DSH boundary: live layout and real-icon controls, not template visual tokens', async () => {
-  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
   const pane = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'features', 'preview', 'A4Pane.tsx'), 'utf8')
   const renderer = await fs.readFile(path.join(frontendRoot, '..', 'backend', 'src', 'migrated', 'resume-engine', 'renderer.js'), 'utf8')
   assert.match(pane, /querySelectorAll<HTMLElement>\('\.cvagent-icon'\)/)
@@ -168,7 +172,7 @@ test('React A4 manual tuning follows the DSH boundary: live layout and real-icon
 })
 
 test('template library exposes the existing copy, revision, and transient-candidate lifecycle without implicit selection', async () => {
-  const app = await fs.readFile(path.join(frontendRoot, 'app.js'), 'utf8')
+  const app = await fs.readFile(path.join(frontendRoot, 'react', 'src', 'runtime', 'workbench-runtime.js'), 'utf8')
   assert.match(app, /function templateOrigin\(template\)/)
   assert.match(app, /if \(template\.immutable\) return '内置模板'/)
   assert.match(app, /data-template-create/)

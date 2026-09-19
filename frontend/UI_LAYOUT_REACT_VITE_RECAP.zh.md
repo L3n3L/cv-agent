@@ -221,14 +221,14 @@ AppShell
 
 - A4、Agent 的业务 pane 尚未改写为 React 组件；
 - 共享 `PaneHeader`、`PaneFooter` 还处于契约设计阶段，旧 selector 仍是行为基线；
-- `/react/` 目前是并行验收入口，根路径仍使用旧入口，待各 pane 逐个迁移并通过截图后再切换。
+- `/react/` 是唯一 Web 入口，根路径只负责重定向；共享 DOM 运行时已迁入 `frontend/react/src/runtime/`，不再存在旧页面入口。
 
 ## 12. 第二阶段执行记录：Markdown pane（2026-09-18）
 
 已完成：
 
 - 新增 React `PaneHeader` 和 `MarkdownPane` 组件；
-- 通过 `legacy-bridge` 将 React Markdown pane 挂载到现有工作台，不复制后端状态；
+- 通过 `react-pane-bridge` 将 React Markdown pane 挂载到工作台，不复制后端状态；
 - 保留现有 `#resumeEditor`、`#editorApply`、`.editor-layout` 等行为契约，保存与重新渲染仍由原有 Agent 工作流负责；
 - 路由切换时卸载旧 React root，避免重复挂载和事件累积；
 - 补充 React 挂载点的全高尺寸契约，避免嵌套挂载后编辑区被压缩。
@@ -248,7 +248,7 @@ AppShell
 已完成：
 
 - 新增 `A4Pane`，复用 `PaneHeader`，统一 A4 标题、模板名、预览状态和操作区的结构；
-- 通过 `legacy-bridge` 暴露 `mountA4Pane`，挂载点为 `#a4PaneMount`；
+- 通过 `react-pane-bridge` 暴露 `mountA4Pane`，挂载点为 `#a4PaneMount`；
 - 保留 `.direct-preview-stage`、`.direct-preview-frame-wrap`、`data-preview-status`、`data-preview-foot-status` 等旧行为契约；
 - 手动微调输入改为 React 受控状态，成功应用后关闭面板，失败时保留面板；
 - A4 挂载点增加纵向 flex 高度契约，避免 iframe 舞台收缩或底部状态栏漂移；
@@ -268,7 +268,7 @@ AppShell
 当前仍未完成：
 
 - Agent pane 仍由旧 DOM 渲染，下一阶段才迁移；
-- 默认根路径已切到 React 构建产物，`/react/` 继续保留作为显式验收入口；旧 JS/CSS 仍作为兼容资源由 React bridge 加载；
+- 根路径与 `/react/` 统一进入 React 构建产物；当前仍使用的 DOM 运行时和样式已随 React 源码迁移，bridge 只作为阶段性 pane 适配边界；
 - A4 页面状态文字、真实测量事件仍由旧 `app.js` 驱动，待 Agent pane 迁移后再统一收口到 React 状态边界。
 
 ## 14. 第四阶段执行记录：共享标题与顶部轨道契约（2026-09-18）

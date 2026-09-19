@@ -21,8 +21,8 @@
 
 ## 排查入口
 
-- 微调草稿：`frontend/react/src/features/preview/A4Pane.tsx` → `frontend/app.js:stagePresentationDraft`；提交/重新测量：`frontend/app.js:applyPresentationTuning` → `/api/agent/presentation`。
-- 模板库：`frontend/app.js:templateCard/renderTemplates/applyTemplate`。
+- 微调草稿：`frontend/react/src/features/preview/A4Pane.tsx` → `frontend/react/src/runtime/workbench-runtime.js:stagePresentationDraft`；提交/重新测量：`frontend/react/src/runtime/workbench-runtime.js:applyPresentationTuning` → `/api/agent/presentation`。
+- 模板库：`frontend/react/src/runtime/workbench-runtime.js:templateCard/renderTemplates/applyTemplate`。
 - 模板 API：`backend/src/server.js:handleTemplates/handleTemplateMutation`。
 - 领域工具：`backend/src/agent/resume-tools.js`。
 - 数据位置：会话内当前简历的 presentation override，以及 `<workspace>/.cvagent/templates/<id>/revisions/`。

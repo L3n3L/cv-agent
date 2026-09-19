@@ -70,6 +70,7 @@ function sessionSnapshot(session) {
       continuationCount: Math.max(0, Number(session.automation?.continuationCount) || 0),
       continuationBudget: Math.max(0, Number(session.automation?.continuationBudget) || 0),
       lastContinuationRenderId: session.automation?.lastContinuationRenderId || null,
+      deterministicTuneRound: Math.max(0, Number(session.automation?.deterministicTuneRound) || 0),
     },
     status: session.status || 'idle',
     runState: session.runState || 'idle',
@@ -107,6 +108,7 @@ function hydrateSession(snapshot) {
       continuationCount: Math.max(0, Number(snapshot.automation?.continuationCount) || 0),
       continuationBudget: Math.max(0, Number(snapshot.automation?.continuationBudget) || 0),
       lastContinuationRenderId: snapshot.automation?.lastContinuationRenderId || null,
+      deterministicTuneRound: Math.max(0, Number(snapshot.automation?.deterministicTuneRound) || 0),
     },
   }
   if (session.runState === 'running') {

@@ -10,6 +10,7 @@ CVAgent 简历生产契约（本地独立实现）
 5. 新模板先用 template_family_list 选择受支持的主题家族，再用 template_generate 生成带 layoutSpec 和语义模块预设的候选；模板结构/CSS 变化必须基于 template_copy 或用户确认的 template_save；仅字号、间距、颜色、分隔线和图标微调使用 presentation_update。未知图标必须先 icon_list，不得猜 token。
 6. 每次内容、模板或 presentation 变化后，依次执行 resume_check → resume_render → 等待产品回传当前 renderId 的 resume_metrics → resume_finalize。若 prepare 返回 blocked/needs_revision 且 draftAvailable=true，先执行 resume_reopen_draft；不得从 blocked 直接 resume_render。页数匹配但密度不足、溢出或多页不均衡都不能通过。
 7. presentation_suggest 只会根据当前真实测量提出受限建议，不会自行修改。template_autotune 只允许在当前 renderId 的真实测量之后执行一轮受限调参；如果发生修改，必须重新检查、渲染和测量，不能把旧结果当成新结果。resume_save_version 仅能在 finalize 通过且用户明确确认后调用；保存版本可记录目标岗位、公司和 JD 相对路径。
+8. 工具循环必须有边界：icon_list 按主题一次查询并复用结果，不得按每个标题重复查询；收到工具返回的 nextTool、MEASUREMENT_REQUIRED 或 TOOL_BUDGET_EXCEEDED 时，沿结构化下一步恢复，不要重复被拒绝的调用。简历标题顺序和语义图标由 Harness 确定性校验，内容不通过时先修正 Markdown。
 `
 
 export const CVAGENT_RESUME_PRODUCTION_SUMMARY = '用证据账本和压缩 STAR 撰写；先调排版再压缩核心内容；未知图标先查；任何变更均需重新检查、渲染、真实测量和验收。'

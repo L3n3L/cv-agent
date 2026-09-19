@@ -5,7 +5,41 @@ export const qualitySchema = z.object({ target: z.enum(['source', 'draft']).defa
 export const listSchema = z.object({ maxFiles: z.number().int().positive().max(200).default(100), maxDepth: z.number().int().min(0).max(8).default(4) })
 export const readMaterialSchema = z.object({ path: z.string().min(1).describe('Relative path returned by workspace_materials_list.') })
 export const writeSchema = z.object({ content: z.string().min(1).describe('Complete replacement Markdown draft. Preserve high-signal evidence unless the user explicitly asks to remove it.') })
-export const measureSchema = z.object({ renderId: z.string().min(1), pageCount: z.number().int().positive().max(3), occupancy: z.array(z.number().min(0).max(1)).min(1).max(3), overflow: z.boolean().default(false) })
+const pageMetricSchema = z.object({
+  page: z.number().int().positive().max(3).optional(),
+  occupancyRatio: z.number().min(0).max(1).optional(),
+  blankRatio: z.number().min(0).max(1).optional(),
+  usedHeight: z.number().nonnegative().optional(),
+  availableHeight: z.number().positive().optional(),
+  topWhitespace: z.number().nonnegative().optional(),
+  bottomWhitespace: z.number().nonnegative().optional(),
+  overflow: z.boolean().optional(),
+  modules: z.array(z.string().max(120)).max(20).optional(),
+  moduleDetails: z.array(z.object({
+    id: z.string().max(120).optional(),
+    type: z.string().max(80).optional(),
+    name: z.string().max(120).optional(),
+    top: z.number().nonnegative().optional(),
+    height: z.number().nonnegative().optional(),
+  })).max(20).optional(),
+}).passthrough(false)
+
+const visualAuditSchema = z.object({
+  state: z.string().max(40).optional(),
+  occupancy: z.array(z.number().min(0).max(1)).max(3).optional(),
+  warnings: z.array(z.object({ code: z.string().max(80), message: z.string().max(240) })).max(20).optional(),
+  moduleCount: z.number().int().nonnegative().max(100).optional(),
+  pageBalance: z.number().min(0).max(1).nullable().optional(),
+}).passthrough(false)
+
+export const measureSchema = z.object({
+  renderId: z.string().min(1),
+  pageCount: z.number().int().positive().max(3),
+  occupancy: z.array(z.number().min(0).max(1)).min(1).max(3),
+  overflow: z.boolean().default(false),
+  pages: z.array(pageMetricSchema).min(1).max(3).optional(),
+  visualAudit: visualAuditSchema.optional(),
+})
 export const iconListSchema = z.object({ query: z.string().max(80).default(''), limit: z.number().int().min(1).max(50).default(24) })
 export const layoutValidateSchema = z.object({ layout: z.record(z.string(), z.unknown()).describe('A template layout specification to normalize and validate before it is proposed or saved.') })
 export const templateSelectSchema = z.object({ templateId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/) })

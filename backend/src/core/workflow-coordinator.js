@@ -80,6 +80,22 @@ export function inspectToolCall(task, toolName, { draftAvailable = false } = {})
     }
   }
 
+  if (['presentation_suggest', 'template_autotune'].includes(name)
+    && ![TASK_STATES.MEASURED, TASK_STATES.NEEDS_REVISION, TASK_STATES.ACCEPTED].includes(state)) {
+    const next = state === TASK_STATES.RENDERED ? 'resume_metrics' : getCanonicalNextAction(task, { draftAvailable }).tool
+    return {
+      allowed: false,
+      code: 'MEASUREMENT_REQUIRED',
+      failureClass: 'requires_transition',
+      nextTool: next,
+      currentState: state,
+      draftAvailable: currentDraft,
+      reason: state === TASK_STATES.RENDERED
+        ? '当前版本已经渲染，必须先接收该 renderId 的真实浏览器测量。'
+        : `版式建议依赖真实测量，当前应先执行 ${next || 'resume_prepare'}。`,
+    }
+  }
+
   if (name === 'resume_save_version' && state !== TASK_STATES.ACCEPTED) {
     return {
       allowed: false,

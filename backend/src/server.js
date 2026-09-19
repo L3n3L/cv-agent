@@ -36,22 +36,6 @@ function assistantText(result) {
   return ''
 }
 
-function withoutTransientUserMessage(messages, content, turnId = '') {
-  const expected = String(content || '')
-  const expectedTurnId = String(turnId || '')
-  const list = Array.isArray(messages) ? messages : []
-  let removeIndex = -1
-  list.forEach((message, index) => {
-    if (chatMessageRole(message) !== 'user') return
-    if (expectedTurnId && String(message.turnId || '') === expectedTurnId) removeIndex = index
-    else if (!expectedTurnId && chatMessageContent(message) === expected) removeIndex = index
-  })
-  if (removeIndex < 0) list.forEach((message, index) => {
-    if (chatMessageRole(message) === 'user' && chatMessageContent(message) === expected) removeIndex = index
-  })
-  return removeIndex < 0 ? list : list.filter((_message, index) => index !== removeIndex)
-}
-
 function chatMessageRole(message) {
   return message?.role || (message?.type === 'human' ? 'user' : message?.type === 'ai' ? 'assistant' : message?.type === 'tool' ? 'tool' : message?.type || '')
 }
@@ -164,7 +148,19 @@ function captureAgentMessages(session, result, { persistUserMessage, transientMe
   }
   const merged = mergeMessageSnapshots(durableMessages, outputMessages)
   session.messageSequence = Math.max(messageSequence, ...merged.map((message) => Number(message?.sequence) || 0))
-  session.messages = persistUserMessage ? merged : withoutTransientUserMessage(merged, transientMessage, turnId)
+  if (persistUserMessage) {
+    session.messages = merged
+    return
+  }
+
+  // Internal continuation prompts are deliberately not part of visible
+  // history. Remove only that exact synthetic message when the model echoed
+  // it. Never remove by turnId/content: continuation reuses the visible turn
+  // id by design, and the user's message must survive every continuation.
+  const transientMessageId = String(currentUser?.messageId || '').trim()
+  session.messages = transientMessageId
+    ? merged.filter((message) => String(message?.messageId || '').trim() !== transientMessageId)
+    : merged
 }
 
 const TOOL_PHASES = Object.freeze({
@@ -310,7 +306,19 @@ async function runAgentTurn(session, message, options = {}) {
   const mode = options.mode || 'user_message'
   const executionMode = options.executionMode || session.executionMode || AGENT_EXECUTION_MODES.CHAT
   const persistUserMessage = options.persistUserMessage === true
-  const inputMessages = [...(Array.isArray(session.messages) ? session.messages : []), { role: 'user', content: message, turnId, runId, messageId: `user-${turnId}`, timestamp: new Date().toISOString(), ...(persistUserMessage ? { sequence: nextMessageSequence(session) } : {}) }]
+  // A measurement continuation belongs to the previous visible turn for
+  // workflow grouping, but its internal prompt is not a new user message.
+  // Give it a separate identity so merge/dedupe cannot collide with, or erase,
+  // the real user message that owns this turn.
+  const inputMessages = [...(Array.isArray(session.messages) ? session.messages : []), {
+    role: 'user',
+    content: message,
+    turnId,
+    runId,
+    messageId: persistUserMessage ? `user-${turnId}` : `internal-${runId}`,
+    timestamp: new Date().toISOString(),
+    ...(persistUserMessage ? { sequence: nextMessageSequence(session) } : {}),
+  }]
   // User turns are durable before the Agent starts. Internal continuation
   // prompts still enter the Agent input, but must never become conversation
   // history visible to the user.
@@ -1078,6 +1086,16 @@ async function handleDomainAction(request, response, options) {
       else if (options.action === 'quality') result = await handlers.resumeQuality(input)
       else if (options.action === 'draft') result = await handlers.resumeDraftWrite(input)
       else result = await handlers.resumeRender()
+      if (options.action === 'render') {
+        // A manual re-render is a valid recovery after an Agent/provider
+        // failure. The new renderId is measurable even when the previous run
+        // ended in `failed`; keep the session from permanently suppressing the
+        // browser callback.
+        session.runState = 'waiting_for_measurement'
+        session.status = session.taskRef.current.state
+        session.lastError = null
+        await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, mode: 'manual_render', executionMode: session.executionMode, reason: 'browser_measurement_required', ...contextFields(session.taskRef.current.context) })
+      }
       sendJson(response, 200, { ok: true, sessionId, result, state: session.taskRef.current.state, context: contextFields(session.taskRef.current.context) })
     })
   } catch (error) {
@@ -1115,6 +1133,8 @@ async function handleMeasurement(request, response, options) {
           pageCount: recorded.pageCount,
           occupancy: [...recorded.occupancy],
           overflow: recorded.overflow,
+          pages: recorded.pages || [],
+          visualAudit: recorded.visualAudit || null,
           nextTool: passed ? 'user_confirmation' : 'resume_render',
           completionAllowed: passed,
           nextAction: verification.nextAction,
@@ -1230,7 +1250,7 @@ async function handleAgentRun(request, response, options) {
     const executionMode = classifyAgentExecutionMode(message)
     session.executionMode = executionMode
     if (isProductionExecutionMode(executionMode)) {
-      session.automation = { continuationCount: 0, continuationBudget: session.automation?.continuationBudget || DEFAULT_AUTO_CONTINUATION_BUDGET, lastContinuationRenderId: null }
+      session.automation = { continuationCount: 0, continuationBudget: session.automation?.continuationBudget || DEFAULT_AUTO_CONTINUATION_BUDGET, lastContinuationRenderId: null, deterministicTuneRound: 0 }
     }
     await persistSession(options.sessionStore, session)
     const execute = () => withSessionLock(session, async () => {
@@ -1258,6 +1278,72 @@ async function handleAgentRun(request, response, options) {
   }
 }
 
+function isLayoutOnlyVerification(verification) {
+  const blockers = Array.isArray(verification?.blockers) ? verification.blockers.map((value) => String(value || '').trim()).filter(Boolean) : []
+  if (!blockers.length) return false
+  return blockers.every((blocker) => (
+    /^目标为 \d+ 页，但实际为 \d+ 页或缺少逐页占用率$/.test(blocker)
+    || blocker === '检测到内容溢出'
+    || /^有 \d+ 页低于最低占用率 /.test(blocker)
+    || /^页面占用率差异 /.test(blocker)
+    || blocker === '存在只有一个模块的孤立页面，应优先调整模板承载或模块流向'
+  ))
+}
+
+async function runDeterministicLayoutContinuation(session, renderId, options, continuationRound, tuneRound) {
+  const taskRef = session.taskRef
+  const runId = `run-${crypto.randomUUID()}`
+  const turnId = String(session.activeTurnId || `turn-${crypto.randomUUID()}`)
+  const task = taskRef.current
+  taskRef.current = { ...task, runId, context: { ...(task.context || {}), runId } }
+  taskRef.current.runId = runId
+  const runLogger = options.serverLogger.child({ ...contextFields(taskRef.current.context), turnId, runId })
+  const mode = 'measurement_continuation_deterministic'
+  const executionMode = AGENT_EXECUTION_MODES.PRODUCTION
+  const runTask = { ...taskRef.current, sessionId: session.sessionId }
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, mode, executionMode, continuationRound, deterministicTuneRound: tuneRound, ...contextFields(taskRef.current.context), runId })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_STARTED, runTask, { state: taskRef.current.state, mode, executionMode, continuationRound, deterministicTuneRound: tuneRound })
+  await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_STARTED, task: runTask, mode, executionMode, reason: 'DSH 风格的版式阻断由 Harness 确定性调参处理。', runId }, options.sessionStore)
+
+  const handlers = createResumeToolHandlers({
+    sessionId: session.sessionId,
+    workspaceRoot: session.workspaceRoot,
+    resumePath: session.resumePath,
+    sourceHash: session.sourceHash,
+    taskRef,
+    logger: runLogger,
+    executionMode,
+    onToolSuccess: sessionToolPersistence(options.sessionStore, session),
+    onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore),
+  })
+  const tuned = await handlers.templateAutotune({ round: tuneRound })
+  if (!tuned.changed) {
+    session.runState = 'idle'
+    session.status = taskRef.current.state
+    session.lastError = null
+    await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'no_change', state: session.status, mode, executionMode, continuationRound, deterministicTuneRound: tuneRound, ...contextFields(taskRef.current.context), runId })
+    await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...taskRef.current, sessionId: session.sessionId }, { outcome: 'no_change', state: session.status, mode, executionMode, continuationRound, deterministicTuneRound: tuneRound })
+    await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...taskRef.current, sessionId: session.sessionId }, outcome: 'no_change', mode, executionMode, reason: '确定性调参已到边界，交给 Agent 处理非版式问题。', runId }, options.sessionStore)
+    return { changed: false, runId }
+  }
+
+  await handlers.resumeQuality()
+  await handlers.resumeRender()
+  const pausedTask = taskRef.current
+  session.automation.deterministicTuneRound = tuneRound
+  session.runState = 'waiting_for_measurement'
+  session.status = pausedTask.state
+  session.lastError = null
+  const pauseDetails = { state: pausedTask.state, mode, executionMode, renderId: pausedTask.context.renderId, reason: 'browser_measurement_required', continuationRound, deterministicTuneRound: tuneRound, ...contextFields(pausedTask.context) }
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, ...pauseDetails, runId })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_PAUSED, { ...pausedTask, runId, sessionId: session.sessionId }, pauseDetails)
+  await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_PAUSED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails, runId }, options.sessionStore)
+  await persistSession(options.sessionStore, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, outcome: 'paused', ...pauseDetails, runId })
+  await emitWorkflowEvent(runLogger, WORKFLOW_EVENTS.AGENT_RUN_FINISHED, { ...pausedTask, runId, sessionId: session.sessionId }, { outcome: 'paused', ...pauseDetails })
+  await publishWorkflowEvent(options.workflowEvents, session, { event: WORKFLOW_EVENTS.AGENT_RUN_FINISHED, task: { ...pausedTask, sessionId: session.sessionId }, outcome: 'paused', ...pauseDetails, runId }, options.sessionStore)
+  return { changed: true, paused: true, runId, renderId: pausedTask.context.renderId }
+}
+
 function scheduleMeasurementContinuation(session, renderId, verification, options) {
   const task = session?.taskRef?.current
   const automation = session.automation || (session.automation = { continuationCount: 0, continuationBudget: DEFAULT_AUTO_CONTINUATION_BUDGET, lastContinuationRenderId: null })
@@ -1273,6 +1359,12 @@ function scheduleMeasurementContinuation(session, renderId, verification, option
     void withSessionLock(session, async () => {
       const current = session.taskRef.current
       if (current.state !== 'needs_revision' || String(current.context.renderId || '') !== String(renderId)) return
+      if (isLayoutOnlyVerification({ blockers: current.blockers }) && Number(automation.deterministicTuneRound) < 3) {
+        const tuneRound = Math.min(3, Math.max(1, (Number(automation.deterministicTuneRound) || 0) + 1))
+        automation.deterministicTuneRound = tuneRound
+        const deterministic = await runDeterministicLayoutContinuation(session, renderId, options, round, tuneRound)
+        if (deterministic.changed) return
+      }
       const blockers = current.blockers.length ? `\n当前阻断项：\n- ${current.blockers.join('\n- ')}` : ''
       const message = `真实浏览器已经完成 renderId=${renderId} 的 A4 测量。请根据当前验收结果继续修订，不要询问用户确认；重新检查、渲染，并等待下一次真实测量。${blockers}`
       await runAgentTurn(session, message, { agentFactory: options.agentFactory, serverLogger: options.serverLogger, sessionStore: options.sessionStore, executionMode: AGENT_EXECUTION_MODES.PRODUCTION, mode: 'measurement_continuation', turnId: session.activeTurnId, onWorkflowEvent: (event) => publishWorkflowEvent(options.workflowEvents, session, event, options.sessionStore) })

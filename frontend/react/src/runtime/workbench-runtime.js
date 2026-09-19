@@ -302,8 +302,30 @@ function previewMeasurementPayload(frame, payload = null) {
   const occupancy = metrics.pages.map((page) => Number(page.occupancyRatio)).filter(Number.isFinite).map((ratio) => Number(clamp(ratio, 0, 1).toFixed(3)))
   const pageCount = Number(metrics.pageCount || occupancy.length || pages.length)
   const overflow = Boolean(metrics.overflow)
-  if (!pageCount || occupancy.length !== pageCount) return null
-  return { pageCount, occupancy, overflow }
+  // The renderer's payload and the actual iframe DOM are one measurement
+  // transaction. Never accept a payload that was produced before pagination
+  // finished (or by a stale document) because it can falsely turn a two-page
+  // resume into an accepted one-page result.
+  if (!pageCount || occupancy.length !== pageCount || pages.length !== pageCount || metrics.pages.length !== pageCount) return null
+  const measuredPages = metrics.pages.slice(0, 3).map((page, index) => ({
+    page: Number(page?.page || index + 1),
+    occupancyRatio: Number(clamp(Number(page?.occupancyRatio), 0, 1).toFixed(3)),
+    blankRatio: Number(clamp(Number(page?.blankRatio), 0, 1).toFixed(3)),
+    usedHeight: Number(page?.usedHeight) || 0,
+    availableHeight: Number(page?.availableHeight) || 0,
+    topWhitespace: Number(page?.topWhitespace) || 0,
+    bottomWhitespace: Number(page?.bottomWhitespace) || 0,
+    overflow: Boolean(page?.overflow),
+    modules: Array.isArray(page?.modules) ? page.modules.slice(0, 20).map((value) => String(value).slice(0, 120)) : [],
+    moduleDetails: Array.isArray(page?.moduleDetails) ? page.moduleDetails.slice(0, 20).map((module) => ({
+      id: String(module?.id || '').slice(0, 120),
+      type: String(module?.type || '').slice(0, 80),
+      name: String(module?.name || '').slice(0, 120),
+      top: Number(module?.top) || 0,
+      height: Number(module?.height) || 0,
+    })) : [],
+  }))
+  return { pageCount, occupancy, overflow, pages: measuredPages, visualAudit: metrics.visualAudit || null }
 }
 
 function persistPreviewMeasurement(frame, identity = {}, payload = null) {
@@ -314,6 +336,10 @@ function persistPreviewMeasurement(frame, identity = {}, payload = null) {
   if (frame.dataset.measureKey !== key || liveState.sessionId !== sessionId || liveState.renderId !== renderId) return false
   const canMeasure = liveState.workflowState === 'rendered' && ['waiting_for_measurement', 'idle'].includes(liveState.runState)
   if (!canMeasure || liveState.measuredRenderKey === key || measurementInFlightKey === key) return false
+  const previewRoot = frame.contentDocument?.querySelector('.resume-document')
+  const domRenderId = String(previewRoot?.dataset?.renderId || '')
+  const domPageCount = frame.contentDocument?.querySelectorAll('.cvagent-resume-page')?.length || 0
+  if ((domRenderId && domRenderId !== renderId) || !domPageCount) return false
   const measurement = previewMeasurementPayload(frame, payload)
   if (!measurement) return false
   measurementInFlightKey = key

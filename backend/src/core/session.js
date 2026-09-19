@@ -33,6 +33,7 @@ export function createResumeSession({ workspace, resumePath, templateId, templat
       continuationCount: 0,
       continuationBudget: DEFAULT_AUTO_CONTINUATION_BUDGET,
       lastContinuationRenderId: null,
+      deterministicTuneRound: 0,
     },
     taskRef: { current: task, presentation: null, presentationRevision: 1 },
     messages: [],

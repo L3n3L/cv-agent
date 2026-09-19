@@ -10,6 +10,47 @@ function clone(task) {
   return { ...task, context: { ...task.context }, acceptance: { ...task.acceptance }, artifacts: { ...task.artifacts }, measurements: task.measurements ? { ...task.measurements } : null, blockers: [...task.blockers] }
 }
 
+function finiteNumber(value, fallback = null) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+function normalizePageMetrics(pages) {
+  if (!Array.isArray(pages)) return []
+  return pages.slice(0, 3).map((page, index) => ({
+    page: Math.max(1, Math.min(3, Math.trunc(finiteNumber(page?.page, index + 1)))),
+    occupancyRatio: finiteNumber(page?.occupancyRatio),
+    blankRatio: finiteNumber(page?.blankRatio),
+    usedHeight: finiteNumber(page?.usedHeight),
+    availableHeight: finiteNumber(page?.availableHeight),
+    topWhitespace: finiteNumber(page?.topWhitespace),
+    bottomWhitespace: finiteNumber(page?.bottomWhitespace),
+    overflow: Boolean(page?.overflow),
+    modules: Array.isArray(page?.modules) ? page.modules.slice(0, 20).map((value) => String(value).slice(0, 120)) : [],
+    moduleDetails: Array.isArray(page?.moduleDetails) ? page.moduleDetails.slice(0, 20).map((module) => ({
+      id: String(module?.id || '').slice(0, 120),
+      type: String(module?.type || '').slice(0, 80),
+      name: String(module?.name || '').slice(0, 120),
+      top: finiteNumber(module?.top),
+      height: finiteNumber(module?.height),
+    })) : [],
+  }))
+}
+
+function normalizeVisualAudit(visualAudit) {
+  if (!visualAudit || typeof visualAudit !== 'object') return null
+  return {
+    state: String(visualAudit.state || '').slice(0, 40),
+    occupancy: Array.isArray(visualAudit.occupancy) ? visualAudit.occupancy.slice(0, 3).map(Number).filter(Number.isFinite) : [],
+    warnings: Array.isArray(visualAudit.warnings) ? visualAudit.warnings.slice(0, 20).map((warning) => ({
+      code: String(warning?.code || '').slice(0, 80),
+      message: String(warning?.message || '').slice(0, 240),
+    })) : [],
+    moduleCount: Math.max(0, Math.trunc(finiteNumber(visualAudit.moduleCount, 0))),
+    pageBalance: visualAudit.pageBalance === null ? null : finiteNumber(visualAudit.pageBalance),
+  }
+}
+
 function move(task, next) {
   const allowed = {
     intake: ['prepared'], prepared: ['drafting'], drafting: ['rendered'], rendered: ['measured'],
@@ -145,8 +186,35 @@ export function recordMeasurement(task, measurement = {}) {
     })
   }
   if (!Number.isFinite(Number(measurement.pageCount))) throw new Error('measurement pageCount is required')
+  const pageCount = Number(measurement.pageCount)
+  const occupancy = Array.isArray(measurement.occupancy) ? measurement.occupancy.map(Number).filter(Number.isFinite) : []
+  if (occupancy.length !== pageCount) {
+    throw Object.assign(new Error('measurement occupancy must contain one value per rendered page'), {
+      code: 'MEASUREMENT_INVALID',
+      failureClass: 'invalid_measurement',
+      details: { pageCount, occupancyCount: occupancy.length },
+    })
+  }
+  if (Array.isArray(measurement.pages) && measurement.pages.length !== pageCount) {
+    throw Object.assign(new Error('measurement pages must match pageCount'), {
+      code: 'MEASUREMENT_INVALID',
+      failureClass: 'invalid_measurement',
+      details: { pageCount, pagesCount: measurement.pages.length },
+    })
+  }
   const next = move(task, TASK_STATES.MEASURED)
-  next.measurements = { renderId: String(measurement.renderId), contentVersion: String(measurement.contentVersion || task.context.contentVersion), templateRevision: String(measurement.templateRevision || task.context.templateRevision), pageCount: Number(measurement.pageCount), occupancy: Array.isArray(measurement.occupancy) ? measurement.occupancy.map(Number).filter(Number.isFinite) : [], overflow: Boolean(measurement.overflow) }
+  const pages = normalizePageMetrics(measurement.pages)
+  const visualAudit = normalizeVisualAudit(measurement.visualAudit)
+  next.measurements = {
+    renderId: String(measurement.renderId),
+    contentVersion: String(measurement.contentVersion || task.context.contentVersion),
+    templateRevision: String(measurement.templateRevision || task.context.templateRevision),
+    pageCount,
+    occupancy,
+    overflow: Boolean(measurement.overflow),
+    ...(pages.length ? { pages } : {}),
+    ...(visualAudit ? { visualAudit } : {}),
+  }
   return next
 }
 
@@ -163,9 +231,14 @@ export function verifyResumeTask(task) {
   const blockers = []
   if (task.intakeRequired) blockers.push('尚未完成首次信息收集')
   if (measurement.pageCount !== task.targetPages || measurement.occupancy.length !== task.targetPages) blockers.push(`目标为 ${task.targetPages} 页，但实际为 ${measurement.pageCount} 页或缺少逐页占用率`)
+  if (Array.isArray(measurement.pages) && measurement.pages.length !== measurement.pageCount) blockers.push('逐页测量数据与页数不一致')
   if (measurement.overflow) blockers.push('检测到内容溢出')
   if (underfilled.length) blockers.push(`有 ${underfilled.length} 页低于最低占用率 ${task.acceptance.minOccupancy}`)
   if (spread > task.acceptance.maxSpread) blockers.push(`页面占用率差异 ${spread.toFixed(3)} 超过 ${task.acceptance.maxSpread}`)
+  const visualWarnings = Array.isArray(measurement.visualAudit?.warnings) ? measurement.visualAudit.warnings : []
+  const isolatedModule = visualWarnings.some((warning) => warning?.code === 'isolated-module')
+    || (Array.isArray(measurement.pages) && measurement.pages.some((page) => measurement.pageCount > 1 && page?.moduleDetails?.length === 1))
+  if (isolatedModule) blockers.push('存在只有一个模块的孤立页面，应优先调整模板承载或模块流向')
   const next = clone(task)
   next.state = blockers.length ? TASK_STATES.NEEDS_REVISION : TASK_STATES.ACCEPTED
   next.blockers = blockers

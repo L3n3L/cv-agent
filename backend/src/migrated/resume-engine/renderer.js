@@ -4,6 +4,7 @@ import { assertTemplateSpec, validateCssText } from './template-schema.js'
 import { assertLayoutSpec } from './layout-schema.js'
 import { renderTemplateLayout, resolveRendererId } from './renderers/registry.js'
 import { getIconDefinition } from './icons/registry.js'
+import { inferResumeModule } from './semantics.js'
 
 function escapeHtml(text) {
   return text
@@ -37,32 +38,7 @@ function sectionHeading(part) {
 }
 
 function inferModuleFromHeading(heading) {
-  const value = String(heading || '').trim()
-  const chinese = [
-    ['教育', 'education'],
-    ['技能', 'skills'],
-    ['项目', 'projects'],
-    ['实习', 'experience'],
-    ['经历', 'experience'],
-    ['获奖', 'awards'],
-    ['链接', 'links'],
-    ['简介', 'summary'],
-    ['头像', 'photo'],
-    ['联系', 'contact'],
-    ['自我评价', 'awards'],
-  ].find(([key]) => value.includes(key))?.[1]
-  if (chinese) return chinese
-  return [
-    [/education|academic|school|university/i, 'education'],
-    [/skill|technology|tech stack/i, 'skills'],
-    [/project|portfolio|case study/i, 'projects'],
-    [/intern|experience|work|employment/i, 'experience'],
-    [/award|honor|certificate/i, 'awards'],
-    [/link|github|website/i, 'links'],
-    [/summary|profile|about|objective/i, 'summary'],
-    [/photo|avatar/i, 'photo'],
-    [/contact/i, 'contact'],
-  ].find(([pattern]) => pattern.test(value))?.[1] || null
+  return inferResumeModule(heading)
 }
 
 function moduleClass(type) {

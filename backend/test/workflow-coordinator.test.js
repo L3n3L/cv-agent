@@ -51,6 +51,63 @@ test('workflow guard allows deterministic recovery and rejects invalid measureme
   assert.equal(payload.nextTool, 'resume_check')
 })
 
+test('workflow guard replays read-only results and caps repeated tool loops', async () => {
+  const taskRef = { current: taskWithDraft(TASK_STATES.DRAFTING), draftRelativePath: '.cvagent/drafts/task/resume.md' }
+  const interventions = []
+  const middleware = createWorkflowGuardMiddleware({
+    taskRef,
+    toolLimits: { icon_list: 1 },
+    maxToolCalls: 6,
+    onIntervention: async (event) => interventions.push(event),
+  })
+  let executions = 0
+  const handler = async (request) => {
+    executions += 1
+    return new ToolMessage({ content: JSON.stringify({ icons: ['school', 'work'] }), tool_call_id: request.toolCall.id, name: request.toolCall.name })
+  }
+
+  const first = await middleware.wrapToolCall({ toolCall: { id: 'icon-1', name: 'icon_list', args: { query: 'school' } }, tool: { name: 'icon_list' } }, handler)
+  const replay = await middleware.wrapToolCall({ toolCall: { id: 'icon-2', name: 'icon_list', args: { query: 'school' } }, tool: { name: 'icon_list' } }, handler)
+  const blocked = await middleware.wrapToolCall({ toolCall: { id: 'icon-3', name: 'icon_list', args: { query: 'work' } }, tool: { name: 'icon_list' } }, handler)
+
+  assert.equal(executions, 1)
+  assert.equal(JSON.parse(String(first.content)).icons[0], 'school')
+  assert.equal(JSON.parse(String(replay.content)).icons[0], 'school')
+  assert.equal(JSON.parse(String(blocked.content)).errorCode, 'TOOL_BUDGET_EXCEEDED')
+  assert.ok(interventions.some((item) => item.decision.intervention === 'read_result_replayed'))
+  assert.ok(interventions.some((item) => item.decision.intervention === 'tool_budget_exceeded'))
+})
+
+test('workflow guard serializes concurrent tool calls before mutating task state', async () => {
+  const taskRef = { current: taskWithDraft(TASK_STATES.DRAFTING), draftRelativePath: '.cvagent/drafts/task/resume.md' }
+  const middleware = createWorkflowGuardMiddleware({ taskRef })
+  let active = 0
+  let peak = 0
+  const handler = async () => {
+    active += 1
+    peak = Math.max(peak, active)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    active -= 1
+    return new ToolMessage({ content: 'ok', tool_call_id: 'queued', name: 'resume_check' })
+  }
+
+  await Promise.all([
+    middleware.wrapToolCall({ toolCall: { id: 'check-1', name: 'resume_check', args: {} }, tool: { name: 'resume_check' } }, handler),
+    middleware.wrapToolCall({ toolCall: { id: 'check-2', name: 'resume_check', args: {} }, tool: { name: 'resume_check' } }, handler),
+  ])
+
+  assert.equal(peak, 1)
+})
+
+test('workflow guard turns premature presentation suggestions into a deterministic transition', async () => {
+  const taskRef = { current: taskWithDraft(TASK_STATES.DRAFTING), draftRelativePath: '.cvagent/drafts/task/resume.md' }
+  const middleware = createWorkflowGuardMiddleware({ taskRef })
+  const blocked = await middleware.wrapToolCall({ toolCall: { id: 'suggest-1', name: 'presentation_suggest', args: {} }, tool: { name: 'presentation_suggest' } }, async () => { throw new Error('must not execute') })
+  const payload = JSON.parse(String(blocked.content))
+  assert.equal(payload.errorCode, 'MEASUREMENT_REQUIRED')
+  assert.equal(payload.nextTool, 'resume_check')
+})
+
 test('workflow state summary is compact and machine-readable', () => {
   const summary = workflowStateSummary(taskWithDraft(TASK_STATES.NEEDS_REVISION), { draftAvailable: true })
   assert.deepEqual(summary, {

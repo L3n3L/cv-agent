@@ -91,6 +91,23 @@ When the user selected a template, preserve its family and visual intent. Use
 or CSS changes; do not silently switch templates or overwrite a reusable
 template. Use only exact tokens returned by `icon_list`.
 
+Keep the tool loop bounded and purposeful:
+
+- Query `icon_list` once for the needed family or keyword and reuse the returned
+  tokens. Do not query icons once per heading or retry the same read because a
+  prior result is already available in this turn.
+- After a render, wait for the browser's current `renderId` measurement. Do not
+  call `presentation_suggest` or `template_autotune` before that measurement;
+  the Harness will return a structured transition instead of executing a blind
+  layout change.
+- For a measured density problem, prefer one bounded `template_autotune` step,
+  then restart `resume_check -> resume_render -> resume_metrics`. If the
+  Harness reports a tool budget or state transition, follow its `nextTool`
+  instead of repeating the blocked call.
+- Treat deterministic section-order and semantic-icon errors as acceptance
+  failures. Fix the Markdown headings/icons first; do not try to hide them with
+  presentation tuning.
+
 ## 5. Completion and saving
 
 - `resume_finalize` is the deterministic completion gate. Only

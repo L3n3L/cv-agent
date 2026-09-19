@@ -186,7 +186,7 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
 
     const sseResponse = await fetch(`${base}/api/agent/events?sessionId=${encodeURIComponent(sessionId)}`)
     assert.equal(sseResponse.status, 200)
-    const ssePromise = waitForSseEvents(sseResponse, (events) => events.some((event) => event.payload?.event === 'verification_passed') && events.filter((event) => event.payload?.event === 'tool_call_succeeded').length >= 14 && events.some((event) => event.payload?.event === 'agent_run_finished' && event.payload?.outcome === 'success'))
+    const ssePromise = waitForSseEvents(sseResponse, (events) => events.some((event) => event.payload?.event === 'verification_passed') && events.filter((event) => event.payload?.event === 'tool_call_succeeded').length >= 13 && events.some((event) => event.payload?.event === 'agent_run_finished' && event.payload?.outcome === 'success'))
 
     const run = await jsonRequest(`${base}/api/agent/run`, { sessionId, workspaceRoot, resumePath: 'resume.md', message: '请检查当前简历，但先不要保存。' })
     assert.equal(run.response.status, 200)
@@ -242,6 +242,7 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     const acceptedSession = await (await fetch(`${base}/api/session?sessionId=${encodeURIComponent(sessionId)}`)).json()
     assert.equal(acceptedSession.session.runState, 'idle')
     assert.equal(acceptedSession.session.lastError, null)
+    assert.equal(acceptedSession.session.messages.filter((message) => message.role === 'user' && message.content === '请检查当前简历，但先不要保存。').length, 1)
 
     const sseEvents = await ssePromise
     const toolOrder = sseEvents
@@ -250,7 +251,7 @@ test('scripted Agent preserves the MCP workflow through SSE, browser metrics, an
     assert.deepEqual(toolOrder, [
       'resume_prepare', 'resume_read', 'resume_check', 'resume_write', 'resume_check', 'resume_render',
       'resume_metrics', 'resume_finalize',
-      'resume_prepare', 'resume_read', 'resume_check', 'resume_write', 'resume_check', 'resume_render',
+      'template_autotune', 'resume_check', 'resume_render',
       'resume_metrics', 'resume_finalize',
     ])
     assert.ok(sseEvents.some((event) => event.type === 'ready'))
@@ -400,6 +401,9 @@ test('production mode resumes automatically after a blocked browser measurement'
     assert.ok(latest.session.messages.every((message) => !String(message.content || '').startsWith('真实浏览器已经完成 renderId=')))
   } finally {
     await closeServer(server)
-    await fs.rm(workspaceRoot, { recursive: true, force: true })
+    // The production continuation persists its final pause event after the
+    // render boundary. Give the session store a bounded retry window before
+    // deleting the test workspace so parallel test files do not race cleanup.
+    await fs.rm(workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })

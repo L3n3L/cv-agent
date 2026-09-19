@@ -284,18 +284,65 @@ export function createResumeToolHandlers(options = {}) {
       return run('resume_metrics', async () => {
         const measurement = recordMeasurement(taskRef.current, { ...contextFields(taskRef.current.context), ...input })
         taskRef.current = measurement
-        return { ...contextFields(taskRef.current.context), state: taskRef.current.state, pageCount: input.pageCount, occupancy: input.occupancy, overflow: input.overflow, nextTool: 'resume_finalize', completionAllowed: false, nextAction: 'Run resume_finalize before claiming completion.' }
+        return {
+          ...contextFields(taskRef.current.context),
+          state: taskRef.current.state,
+          pageCount: input.pageCount,
+          occupancy: input.occupancy,
+          overflow: input.overflow,
+          pages: taskRef.current.measurements?.pages || [],
+          visualAudit: taskRef.current.measurements?.visualAudit || null,
+          nextTool: 'resume_finalize',
+          completionAllowed: false,
+          nextAction: 'Run resume_finalize before claiming completion.',
+        }
       }, {
-        resultSummary: (result) => ({ state: result.state, pageCount: result.pageCount, occupancy: result.occupancy }),
+        resultSummary: (result) => ({
+          state: result.state,
+          pageCount: result.pageCount,
+          occupancy: result.occupancy,
+          isolatedModule: Boolean(result.visualAudit?.warnings?.some((warning) => warning?.code === 'isolated-module')),
+        }),
         workflowEvent: {
           succeeded: WORKFLOW_EVENTS.MEASUREMENT_RECEIVED,
-          fields: ({ result }) => ({ contentVersion: result.contentVersion, templateRevision: result.templateRevision, renderId: result.renderId, pageCount: result.pageCount, occupancy: result.occupancy, overflow: result.overflow }),
+          fields: ({ result }) => ({
+            contentVersion: result.contentVersion,
+            templateRevision: result.templateRevision,
+            renderId: result.renderId,
+            pageCount: result.pageCount,
+            occupancy: result.occupancy,
+            overflow: result.overflow,
+            isolatedModule: Boolean(result.visualAudit?.warnings?.some((warning) => warning?.code === 'isolated-module')),
+          }),
         },
       })
     },
     async resumeVerify() {
       return run('resume_finalize', async () => {
         const result = verifyResumeTask(taskRef.current)
+        // A page count cannot prove that the resume is semantically usable.
+        // Re-run the local content gate at the final boundary so a malformed
+        // section order or mismatched semantic icon cannot be accepted just
+        // because the browser reported one page.
+        if (result.passed && taskRef.current.context.contentVersion && taskRef.draftRelativePath) {
+          const draft = await readResumeDraft(options.workspaceRoot, taskRef.current.context.taskId, options.resumePath)
+          const quality = resumeQualityCheck(draft.content, { targetPages: taskRef.current.targetPages })
+          const qualityBlockers = quality.checks
+            .filter((item) => item.status === 'error')
+            .map((item) => item.message)
+          if (qualityBlockers.length) {
+            const blockedTask = { ...(result.task || taskRef.current), state: TASK_STATES.NEEDS_REVISION, blockers: [...new Set([...result.blockers, ...qualityBlockers])] }
+            taskRef.current = blockedTask
+            return {
+              ...result,
+              passed: false,
+              state: blockedTask.state,
+              blockers: blockedTask.blockers,
+              task: blockedTask,
+              nextAction: '先修正简历结构或语义图标，再重新检查、渲染和测量。',
+            }
+          }
+        }
         taskRef.current = result.task || taskRef.current
         const nextAction = result.passed
           ? { tool: 'user_confirmation', reason: '验收通过，等待用户确认保存正式版本。' }

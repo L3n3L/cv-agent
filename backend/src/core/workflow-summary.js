@@ -25,6 +25,7 @@ const SUMMARY_BOOLEAN_KEYS = new Set([
   'passed',
   'sourcePreserved',
   'createdAsCopy',
+  'isolatedModule',
 ])
 
 const MAX_SUMMARY_STRING_LENGTH = 120

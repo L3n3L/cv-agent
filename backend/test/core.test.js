@@ -14,6 +14,7 @@ import { withSessionLock } from '../src/core/session.js'
 import { createSessionStore } from '../src/core/session-store.js'
 import { createWorkspaceRegistry } from '../src/core/workspace-registry.js'
 import { getPresentationOverride, presentationWithOverride } from '../src/migrated/resume-engine/presentation.js'
+import { resumeQualityCheck } from '../src/migrated/resume-engine/quality.js'
 
 function task(targetPages = 1) { return createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume-1', targetPages }) }
 
@@ -93,6 +94,16 @@ test('session store survives restart and marks interrupted runs for recovery', a
   }
 })
 
+test('measurement rejects payloads whose page arrays disagree with pageCount', () => {
+  let current = createResumeTask({ workspaceId: 'workspace-1', resumeId: 'resume.md', templateId: 'campus', templateRevision: 'campus@1' })
+  current = recordDraftWrite(current, { contentVersion: 'content-1' })
+  current = recordRender(current, { contentVersion: 'content-1', templateRevision: 'campus@1', renderId: 'render-1' })
+  assert.throws(
+    () => recordMeasurement(current, { contentVersion: 'content-1', templateRevision: 'campus@1', renderId: 'render-1', pageCount: 1, occupancy: [0.94], pages: [{ page: 1 }, { page: 2 }] }),
+    (error) => error.code === 'MEASUREMENT_INVALID',
+  )
+})
+
 test('session store replays only durable workflow events after a sequence cursor', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-workflow-replay-'))
   try {
@@ -155,6 +166,17 @@ test('presentation suggestions require current metrics and never write by themse
   assert.equal(suggestion.requiresUserConfirmation, true)
   assert.ok(suggestion.patch.layout.fontSize > 14)
   assert.equal(current.measurements.occupancy[0], 0.62)
+})
+
+test('resume quality gate catches semantic section order and icon mismatches', () => {
+  const invalid = `# 林能隆\n\n## [icon:school] 荣誉奖项\n\n- 国家二等奖\n\n## 教育经历\n\n- 山东农业大学\n\n## 实习经历\n\n- AI Agent 产品实习\n`
+  const result = resumeQualityCheck(invalid, { targetPages: 1 })
+  assert.equal(result.passed, false)
+  assert.ok(result.checks.some((item) => item.id === 'structure.semantic-order' && item.status === 'error'))
+  assert.ok(result.checks.some((item) => item.id === 'structure.semantic-icons' && item.status === 'error'))
+
+  const valid = `# 林能隆\n\n## 教育经历\n\n- 山东农业大学\n\n## 实习经历\n\n- AI Agent 产品实习\n\n## 项目经历\n\n- Agent Harness\n\n## 荣誉奖项\n\n- 国家二等奖\n`
+  assert.equal(resumeQualityCheck(valid, { targetPages: 1 }).passed, true)
 })
 
 test('presentation override merges bounded groups and reset only clears the current resume override', () => {
@@ -372,11 +394,11 @@ test('workspace drafts are isolated from the source resume and tools advance tas
     assert.deepEqual(materials.files.map((file) => file.path), ['materials/facts.md', 'resume.md'])
     const material = await tools.find((tool) => tool.name === 'workspace_material_read').invoke({ path: 'materials/facts.md' })
     assert.match(material.content, /High signal evidence/)
-    const written = await tools.find((tool) => tool.name === 'resume_write').invoke({ content: '# Draft Resume\n\nImproved content\n' })
+    const written = await tools.find((tool) => tool.name === 'resume_write').invoke({ content: '# Draft Resume\n\n## Experience\n\n- Improved content\n' })
     assert.equal(written.sourcePreserved, true)
     assert.equal(taskRef.current.state, TASK_STATES.DRAFTING)
     const currentInspection = await tools.find((tool) => tool.name === 'resume_read').invoke({ includeContent: true })
-    assert.equal(currentInspection.content, '# Draft Resume\n\nImproved content\n')
+    assert.equal(currentInspection.content, '# Draft Resume\n\n## Experience\n\n- Improved content\n')
     taskRef.current = { ...taskRef.current, state: TASK_STATES.BLOCKED, blockers: ['没有当前内容和模板匹配的测量结果'], context: { ...taskRef.current.context, renderId: 'render-old' } }
     const preparedDraft = await tools.find((tool) => tool.name === 'resume_prepare').invoke({})
     assert.equal(preparedDraft.sourceType, 'isolated_draft')
@@ -772,7 +794,7 @@ test('workspace selection imports a managed workspace and drives the agent by op
 
 test('measurement callback verifies the exact rendered artifact', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cvagent-measure-'))
-  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Resume\n\nEvidence\n', 'utf8')
+  await fs.writeFile(path.join(workspaceRoot, 'resume.md'), '# Resume\n\n## Experience\n\n- Evidence\n', 'utf8')
   const server = createServer({
     logger: createLogger({ directory: path.join(workspaceRoot, 'test-logs'), component: 'measure-test' }),
     sessionDirectory: path.join(workspaceRoot, 'sessions'),
@@ -833,7 +855,7 @@ test('measurement callback verifies the exact rendered artifact', async () => {
     const saved = await saveResponse.json()
     assert.equal(saveResponse.status, 200)
     assert.equal(saved.state, TASK_STATES.SAVED)
-    assert.equal(await fs.readFile(path.join(workspaceRoot, 'resume.md'), 'utf8'), '# Resume\n\nEvidence\n')
+    assert.equal(await fs.readFile(path.join(workspaceRoot, 'resume.md'), 'utf8'), '# Resume\n\n## Experience\n\n- Evidence\n')
     const stale = await fetch(`http://127.0.0.1:${address.port}/api/agent/measure`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: run.sessionId, renderId: 'render_old', pageCount: 1, occupancy: [0.99], overflow: false }) })
     assert.equal(stale.status, 400)
   } finally {

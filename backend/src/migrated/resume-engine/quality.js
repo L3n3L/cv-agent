@@ -1,4 +1,5 @@
 import { inspectIconTokens } from './icons/registry.js'
+import { analyzeResumeStructure } from './semantics.js'
 
 const PLACEHOLDER_PATTERNS = [
   /某某|待补充|请填写|your-id|demo@example\.com/i,
@@ -75,6 +76,28 @@ export function resumeQualityCheck(content, options = {}) {
     iconReport.unknown.length ? '请删除未注册 token，改用当前图标目录中已支持的图标。' : undefined,
   )
 
+  const semanticReport = analyzeResumeStructure(text)
+  add(
+    'structure.semantic-order',
+    semanticReport.errors.some((item) => item.id === 'section.order') ? 'error' : 'pass',
+    semanticReport.errors.some((item) => item.id === 'section.order')
+      ? semanticReport.errors.filter((item) => item.id === 'section.order').map((item) => item.message).join('；')
+      : '核心简历模块顺序符合标准投递版',
+    semanticReport.errors.some((item) => item.id === 'section.order')
+      ? semanticReport.errors.filter((item) => item.id === 'section.order').map((item) => item.detail).join('；')
+      : undefined,
+  )
+  add(
+    'structure.semantic-icons',
+    semanticReport.errors.some((item) => item.id === 'section.semantic-icon') ? 'error' : 'pass',
+    semanticReport.errors.some((item) => item.id === 'section.semantic-icon')
+      ? semanticReport.errors.filter((item) => item.id === 'section.semantic-icon').map((item) => item.message).join('；')
+      : '模块图标语义一致',
+    semanticReport.errors.some((item) => item.id === 'section.semantic-icon')
+      ? semanticReport.errors.filter((item) => item.id === 'section.semantic-icon').map((item) => item.detail).join('；')
+      : undefined,
+  )
+
   const warnings = checks.filter((item) => item.status !== 'pass').map((item) => item.message)
   const errors = checks.filter((item) => item.status === 'error')
   const targetPages = Number(options.targetPages || 1)
@@ -100,6 +123,7 @@ export function resumeQualityCheck(content, options = {}) {
     longBullets: longBullets.length,
     placeholders: placeholderCount,
     icons: iconReport,
+    semantics: semanticReport,
     checks,
     warnings,
     next: warnings.length ? '先处理提醒项，再调用 resume_render 查看实际页数。' : '结构检查通过，调用 resume_render 进行视觉和页数检查。',

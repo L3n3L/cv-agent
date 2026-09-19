@@ -45,10 +45,11 @@ export function autoTunePresentation({ task, template, presentation, resumePath,
   const maximum = occupancy.length ? Math.max(...occupancy) : 0
   const spread = occupancy.length > 1 ? maximum - minimum : 0
   const sparse = minimum < numberOr(task.acceptance?.minOccupancy, 0.9)
+  const tooManyPages = Number(measurement.pageCount) > Number(task.targetPages || 1) || occupancy.length > Number(task.targetPages || 1)
   const changes = []
   const patch = { layout: {} }
 
-  if (measurement.overflow || maximum > 1) {
+  if (tooManyPages || measurement.overflow || maximum > 1) {
     const pageMargin = Math.max(24, round(layout.pageMargin - 2))
     patch.layout.pageMargin = pageMargin
     changes.push(`页边距 ${layout.pageMargin}px → ${pageMargin}px`)
@@ -99,7 +100,7 @@ export function autoTunePresentation({ task, template, presentation, resumePath,
     measurement,
     patch,
     changes,
-    reason: measurement.overflow || maximum > 1
+    reason: tooManyPages || measurement.overflow || maximum > 1
       ? '检测到溢出，按 DSH 规则逐轮收紧排版参数。'
       : sparse
         ? '检测到页面密度不足，按 DSH 规则逐轮增加可读密度。'
